@@ -1,0 +1,9 @@
+{
+  "max-concurrent-downloads": 6,
+  "runtimes": {
+    "nvidia": {
+      "args": [],
+      "path": "nvidia-container-runtime"
+    }
+  }
+}

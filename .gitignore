@@ -1,0 +1,30 @@
+# Secrets and local configuration
+.env
+.env.*
+*.pem
+*.key
+*token*
+*secret*
+
+# Runtime logs
+logs/*.log
+*.pid
+
+# Robotics datasets and model artifacts
+*.hdf5
+*.h5
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+checkpoints/
+datasets/
+videos/
+
+# Python and editor state
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+.DS_Store
