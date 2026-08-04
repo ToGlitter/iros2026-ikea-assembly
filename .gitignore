@@ -8,6 +8,9 @@
 
 # Runtime logs
 logs/*.log
+logs/*.json
+logs/ikea_smoke_frames/
+logs/live/
 *.pid
 
 # Robotics datasets and model artifacts

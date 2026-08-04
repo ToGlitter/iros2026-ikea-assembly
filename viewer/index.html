@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IKEA Simulation Live</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #111315; color: #f3f4f6; }
+    header { height: 52px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #34383d; }
+    h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: 0; }
+    #status { color: #a7f3d0; font: 13px ui-monospace, monospace; }
+    main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: #34383d; height: calc(100vh - 52px); }
+    figure { margin: 0; min-width: 0; position: relative; background: #08090a; display: grid; place-items: center; overflow: hidden; }
+    img { width: 100%; height: 100%; object-fit: contain; image-rendering: auto; }
+    figcaption { position: absolute; top: 10px; left: 10px; padding: 5px 8px; background: rgba(0,0,0,.7); border: 1px solid rgba(255,255,255,.2); border-radius: 4px; font-size: 12px; }
+    @media (max-width: 760px) { main { grid-template-columns: 1fr; height: auto; } figure { aspect-ratio: 1 / 1; } }
+  </style>
+</head>
+<body>
+  <header><h1>IKEA Simulation Live</h1><div id="status">starting</div></header>
+  <main>
+    <figure><img id="left" alt="Left hand camera"><figcaption>Left hand</figcaption></figure>
+    <figure><img id="first" alt="First person camera"><figcaption>First person</figcaption></figure>
+    <figure><img id="right" alt="Right hand camera"><figcaption>Right hand</figcaption></figure>
+  </main>
+  <script>
+    const cameras = {
+      left: "../logs/live/left_hand_camera_rgb.jpg",
+      first: "../logs/live/first_person_camera_rgb.jpg",
+      right: "../logs/live/right_hand_camera_rgb.jpg"
+    };
+    async function refresh() {
+      const stamp = Date.now();
+      for (const [id, path] of Object.entries(cameras)) {
+        document.getElementById(id).src = `${path}?t=${stamp}`;
+      }
+      try {
+        const response = await fetch(`../logs/live/status.json?t=${stamp}`, { cache: "no-store" });
+        const data = await response.json();
+        if (data.status === "running") {
+          document.getElementById("status").textContent = `step ${data.step} | ${data.steps_per_second.toFixed(1)} FPS`;
+        } else if (data.status === "error") {
+          document.getElementById("status").textContent = `error | ${data.message}`;
+        } else {
+          document.getElementById("status").textContent = `initializing | ${data.phase || "starting"}`;
+        }
+      } catch (_) {
+        document.getElementById("status").textContent = "starting";
+      }
+    }
+    refresh();
+    setInterval(refresh, 150);
+  </script>
+</body>
+</html>
