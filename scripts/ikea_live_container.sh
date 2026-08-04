@@ -49,10 +49,32 @@ sed -i \
         robot.write_root_pose_to_sim(root_pose=root_pose, env_ids=env_ids)\
         env.sim.forward()\
         return True\
+\
+    def set_initial_state(self, state):\
+        import torch\
+        env = self._env.unwrapped\
+        robot = env.scene.articulations["robot"]\
+        env_ids = torch.arange(robot.num_instances, device=env.device, dtype=torch.int32)\
+        robot_state = state["robot"]\
+        robot_pose = torch.tensor([robot_state["root_pose"]], device=env.device, dtype=torch.float32).repeat(robot.num_instances, 1)\
+        robot_velocity = torch.tensor([robot_state["root_velocity"]], device=env.device, dtype=torch.float32).repeat(robot.num_instances, 1)\
+        joint_position = torch.tensor([robot_state["joint_position"]], device=env.device, dtype=torch.float32).repeat(robot.num_instances, 1)\
+        joint_velocity = torch.tensor([robot_state["joint_velocity"]], device=env.device, dtype=torch.float32).repeat(robot.num_instances, 1)\
+        robot.write_root_pose_to_sim(robot_pose, env_ids=env_ids)\
+        robot.write_root_velocity_to_sim(robot_velocity, env_ids=env_ids)\
+        robot.write_joint_state_to_sim(joint_position, joint_velocity, env_ids=env_ids)\
+        for name, object_state in state["rigid_objects"].items():\
+            rigid_object = env.scene.rigid_objects[name]\
+            root_pose = torch.tensor([object_state["root_pose"]], device=env.device, dtype=torch.float32).repeat(rigid_object.num_instances, 1)\
+            root_velocity = torch.tensor([object_state["root_velocity"]], device=env.device, dtype=torch.float32).repeat(rigid_object.num_instances, 1)\
+            rigid_object.write_root_pose_to_sim(root_pose, env_ids=env_ids)\
+            rigid_object.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)\
+        env.sim.forward()\
+        return True\
 ' \
   /workspace/robofinals/robofinals/distributed/proxy.py
 sed -i \
-  's/"call", "getattr_value"/"call", "pose_values", "set_robot_pose", "getattr_value"/' \
+  's/"call", "getattr_value"/"call", "pose_values", "set_robot_pose", "set_initial_state", "getattr_value"/' \
   /workspace/robofinals/robofinals/distributed/proxy.py
 
 conda run --no-capture-output -n robofinals \
@@ -83,4 +105,5 @@ PY_WAIT
 
 conda run --no-capture-output -n robofinals \
   python /host/scripts/ikea_live.py \
-  --output-dir /host/logs/live
+  --output-dir /host/logs/live \
+  "$@"

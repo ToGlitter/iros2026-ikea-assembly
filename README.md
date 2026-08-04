@@ -15,7 +15,7 @@
 | 23 维动作协议 | 已确认 |
 | Neutral hold baseline | 60/60 步成功 |
 | 三路相机实时画面 | 已完成 |
-| 完整演示动作重放 | 下一步 |
+| 完整演示动作重放 | 7349/7349 已跑通，首轮未成功 |
 | 官方 OpenPI baseline | 待运行 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
@@ -93,6 +93,14 @@ systemctl --user stop iros-ikea-viewer.service
 
 报告默认写入 `logs/hdf5_schema.json`。数据和报告均被 `.gitignore` 排除，避免提交大文件或内部元数据。
 
+### 4. 实时重放专家演示
+
+```bash
+./scripts/start_ikea_replay.sh datasets/AssembleTableTask_1784627181912351.hdf5
+```
+
+浏览器仍使用 <http://127.0.0.1:8765/viewer/>。状态栏显示当前帧、总帧数、百分比和 FPS。replay 会恢复 HDF5 中记录的机器人关节、机器人根位姿、桌板和四条桌腿初始状态。
+
 ## 23 维动作协议
 
 ```text
@@ -115,14 +123,16 @@ systemctl --user stop iros-ikea-viewer.service
 - 关节位置最大漂移约 `0.07 rad`。
 - 末端位置最大漂移约 `2.4 cm`。
 - 实时仿真中机器人已放置到演示起点，桌面和待装配零件可见。
+- 首轮完整 open-loop replay 执行 7349/7349 帧，约 13.2 step/s，无异常终止或截断，但最终 `success=false`。
+- replay 中能够观察到双臂操作和机器人导航，说明数据到动作接口的基本链路成立；后续需要用专家状态轨迹定位开环漂移。
 
 实时查看器包含对官方镜像临时容器副本的兼容补丁：转发完整本地场景参数、支持字典形式的远程对象路径，并在 reset 后恢复演示中的机器人根位姿。不会修改宿主机上的 Docker 镜像。
 
 ## 下一阶段路线
 
-1. 从 HDF5 读取 7349 帧动作，在同一 Scene02 初始状态下做完整 open-loop replay。
-2. 保存视频、成功判定、机器人/桌腿状态和与演示轨迹的误差曲线。
-3. 如果 open-loop replay 漂移，先定位控制频率、动作延迟、reset 初始状态和四元数约定。
+1. 记录 replay 每一帧机器人与桌腿状态，和 HDF5 专家状态计算误差曲线。
+2. 定位首个显著漂移帧，检查控制频率、动作延迟、reset 初始状态和四元数约定。
+3. 保存完整视频、成功判定和关键阶段截图。
 4. 运行镜像自带 OpenPI baseline，建立第二条官方对照线。
 5. 将 Lightwheel 300 条完整演示转换为训练索引，先训练行为克隆/ACT 类策略。
 6. 按“抓腿—对孔—插入—释放—换腿”拆成单技能闭环，再用状态机完成整桌。
