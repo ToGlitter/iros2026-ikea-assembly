@@ -12,6 +12,7 @@
 | RTX 4090 + NVIDIA Container Toolkit | 已验证 |
 | Isaac Sim / AssembleTableTask | 已成功启动 |
 | 官方 LeRobot episode 159 | Parquet + 四路 RGB 最小 batch 已加载 |
+| 官方 state-only BC smoke | 2048 帧训练链路已收敛，非仿真策略 |
 | Lightwheel HDF5 样本 | 已完成诊断，暂不作为 baseline 输入 |
 | 23 维动作协议 | 已确认 |
 | Neutral hold baseline | 60/60 步成功 |
@@ -94,9 +95,11 @@ systemctl --user stop iros-ikea-viewer.service
 ./scripts/run_official_lerobot_inspection.sh
 ./scripts/download_official_episode_rgb.py
 ./scripts/run_official_lerobot_batch.sh
+./scripts/run_official_ee_encoding_analysis.sh
+./scripts/run_official_state_baseline.sh
 ```
 
-三条命令依次检查 Parquet、断点续传该 episode 引用的四路 RGB、实际加载首/中/末三帧。验证报告和抽帧保存在 `logs/`，不会提交 GitHub。
+前两条命令检查 Parquet 并断点续传视频，第三条实际加载首/中/末三帧，第四条用镜像内 G1 URDF 做 FK 编码审计，第五条训练一个 state-only MLP smoke baseline。验证报告、抽帧和 checkpoint 保存在 `logs/`，不会提交 GitHub。
 
 比赛镜像内 LeRobot 为旧版 `0.1.0`，不能原生读取官方数据的 v3 Parquet 元数据；仓库中的最小 loader 使用镜像已有的 PyArrow/PyAV 绕过这个版本冲突。官方真机动作是 36 维，仿真动作是 23 维，两者不能直接 replay。
 
@@ -164,12 +167,12 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 
 ## 下一阶段路线
 
-1. 从官方数据采集配置确认 `action.ee_action[12]` 的旋转编码，以及 `cam_0..3` 的精确安装名称。
-2. 建立官方真机字段到训练 schema 的 adapter；先保留原始 36 维关节目标和 2 维手指命令。
+1. 从主办方采集配置确认 `action.ee_action[12]` 的精确 TCP 定义和 `cam_0..3` 的安装名称；当前 FK 已确认根坐标系更合理，但不能替代 TCP 标定。
+2. 把视觉输入接入现有官方字段 adapter，先在 episode 159 上做图像条件的 overfit smoke test。
 3. 设计独立的仿真策略头，将视觉/任务表示输出为仿真需要的双腕位姿、夹爪、导航、基座和躯干共 23 维。
-4. 按 8 个官方技能建立采样与训练 manifest，先在少量 episode 上完成 overfit smoke test，再扩大下载。
+4. 按 8 个官方技能建立采样与训练 manifest，再扩大下载范围。
 5. 训练 IKEA 专用 OpenPI/行为克隆 checkpoint，并在 Isaac Sim 中闭环评估；镜像默认的 FactoryTask1 checkpoint 不能冒充 IKEA baseline。
-6. Lightwheel HDF5 仅保留为仿真控制和 state replay 的诊断对照，不进入当前官方 baseline 训练主线。
+6. Lightwheel HDF5 继续作为仿真控制和 state replay 的诊断对照，不进入当前官方 baseline 训练主线。
 
 ## 官方资源
 
@@ -194,6 +197,8 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── inspect_official_lerobot.py
 │   ├── download_official_episode_rgb.py
 │   ├── load_official_lerobot_batch.py
+│   ├── analyze_official_ee_encoding.py
+│   ├── train_official_state_baseline.py
 │   ├── analyze_expert_states.py
 │   ├── diagnose_replay.py
 │   ├── ikea_live.py
@@ -201,6 +206,8 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── run_hdf5_inspection.sh
 │   ├── run_official_lerobot_inspection.sh
 │   ├── run_official_lerobot_batch.sh
+│   ├── run_official_ee_encoding_analysis.sh
+│   ├── run_official_state_baseline.sh
 │   ├── run_ikea_smoke.sh
 │   ├── start_ikea_live.sh
 │   ├── start_ikea_replay.sh

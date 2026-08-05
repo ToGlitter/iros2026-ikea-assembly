@@ -14,6 +14,8 @@
 - `official_lerobot_sample.json`：官方 Parquet 样本的 schema、episode 索引和向量统计。
 - `official_lerobot_batch.json`：官方 episode 159 的图像/状态/动作 batch 验证。
 - `official_lerobot_batch_frames/`：batch 验证解码的四路 RGB 抽帧。
+- `official_ee_encoding.json`：官方末端字段与 G1 URDF FK 的编码/坐标系对照。
+- `official_state_baseline.json`、`official_state_baseline.pt`：官方 state-only BC smoke 指标和本地 checkpoint。
 - `*.log`：Isaac Sim / env server 日志。
 
 这些文件可能很大，或含内部数据路径和元数据，因此不会同步到 GitHub。

@@ -217,3 +217,19 @@
 2. 建立官方 v3 数据的训练 adapter 与按技能采样器。
 3. 在少量官方 episode 上跑通 IKEA 专用策略的 overfit smoke test。
 4. 增加 23 维仿真策略头并在 Isaac Sim 做闭环评估。
+
+### FK 编码审计与训练 smoke
+
+- 新增 `scripts/analyze_official_ee_encoding.py`，在官方镜像内使用 G1 URDF + Pinocchio 对官方 `ee_state/ee_action` 做 FK 对照。
+- 36 维官方关节目标与镜像 URDF 的 29 个身体关节顺序一致：根位姿 7 + 腿 12 + 腰 3 + 双臂 14。
+- 根坐标系解释明显优于世界坐标系；对 `left/right_wrist_yaw_link` 的根坐标 RPY 假设平均绝对误差约 `0.053`，旋转向量约 `0.082`。
+- 仍存在约厘米级位置和 0.1 rad 级 TCP 偏移/姿态误差，说明采集端末端 frame 与仿真 URDF wrist link 不是同一 frame；暂不把这个结果当作 23 维控制映射。
+- 新增 `scripts/train_official_state_baseline.py`，将官方 36/12/2 维原始字段组成 58 维 state+task 输入和 50 维动作目标。
+- episode 159 前 2,048 帧训练 500 步：归一化训练 MSE `1.003 -> 0.0564`，验证 MSE `0.0742`，`robot_q_desired` 验证 RMSE `0.0137 rad`，checkpoint 仅保存在本机 `logs/`。
+- 该 smoke baseline 验证的是“官方数据 -> adapter -> 优化器 -> checkpoint”，没有声明视觉闭环或 Isaac Sim 成功。
+
+### 当前下一步
+
+1. 获取主办方采集端 TCP/frame 定义，消除 FK 审计中的末端偏移。
+2. 加入四路 RGB 输入，做 episode 159 图像条件 overfit。
+3. 再实现显式的 23 维仿真策略头，并用 Lightwheel state replay/Isaac Sim 做闭环验收。
