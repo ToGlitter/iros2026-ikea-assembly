@@ -9,6 +9,7 @@
 # Runtime logs
 logs/*.log
 logs/*.json
+logs/*.npz
 logs/ikea_smoke_frames/
 logs/live/
 *.pid

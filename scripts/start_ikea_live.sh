@@ -21,9 +21,18 @@ run_args=(run --detach
   "$image"
   /host/scripts/ikea_live_container.sh)
 
+containers=(
+  robofinals-ikea-live
+  robofinals-ikea-replay
+  robofinals-ikea-state-replay
+)
+
 if docker info >/dev/null 2>&1; then
+  docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
   docker "${run_args[@]}"
 elif getent group docker | grep -q "$(id -un)"; then
+  printf -v docker_command '%q ' docker rm -f "${containers[@]}"
+  sg docker -c "$docker_command" >/dev/null 2>&1 || true
   printf -v docker_command '%q ' docker "${run_args[@]}"
   sg docker -c "$docker_command"
 else

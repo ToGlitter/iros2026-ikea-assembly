@@ -183,7 +183,7 @@ def make_ikea_config() -> dict[str, Any]:
         "concatenate_terms": False,
         "distributed": False,
         "physics_backend": "physx",
-        "seed": 42,
+        "seed": 0,
         "sources": None,
         "object_projects": None,
         "usd_simplify": False,

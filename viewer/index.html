@@ -41,12 +41,16 @@
         const data = await response.json();
         if (data.status === "running") {
           if (data.mode === "replay") {
-            document.getElementById("status").textContent = `replay ${data.completed_frames}/${data.total_frames} | ${data.progress_percent.toFixed(1)}% | ${data.steps_per_second.toFixed(1)} FPS`;
+            const drift = data.first_divergence ? ` | drift @ ${data.first_divergence.frame_index}` : "";
+            document.getElementById("status").textContent = `replay ${data.completed_frames}/${data.total_frames} | ${data.progress_percent.toFixed(1)}% | ${data.steps_per_second.toFixed(1)} FPS${drift}`;
+          } else if (data.mode === "state_replay") {
+            document.getElementById("status").textContent = `state replay ${data.completed_frames}/${data.total_frames} | ${data.progress_percent.toFixed(1)}% | ${data.steps_per_second.toFixed(1)} FPS | source success ${data.source_success}`;
           } else {
             document.getElementById("status").textContent = `step ${data.step} | ${data.steps_per_second.toFixed(1)} FPS`;
           }
         } else if (data.status === "completed") {
-          document.getElementById("status").textContent = `completed ${data.completed_frames}/${data.total_frames} | success ${data.is_success}`;
+          const success = data.mode === "state_replay" ? data.source_success : data.is_success;
+          document.getElementById("status").textContent = `completed ${data.completed_frames}/${data.total_frames} | success ${success}`;
         } else if (data.status === "error") {
           document.getElementById("status").textContent = `error | ${data.message}`;
         } else {

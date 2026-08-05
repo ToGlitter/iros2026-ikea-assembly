@@ -15,7 +15,9 @@
 | 23 维动作协议 | 已确认 |
 | Neutral hold baseline | 60/60 步成功 |
 | 三路相机实时画面 | 已完成 |
-| 完整演示动作重放 | 7349/7349 已跑通，首轮未成功 |
+| 完整演示动作重放 | 7349/7349 已跑通，`success=false` |
+| 官方 state replay | 已接入并验证抓取，关键状态误差为 0 |
+| 动作重放偏差定位 | frame 76 关节先偏离，早于 frame 186 物体运动 |
 | 官方 OpenPI baseline | 待运行 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
@@ -93,13 +95,27 @@ systemctl --user stop iros-ikea-viewer.service
 
 报告默认写入 `logs/hdf5_schema.json`。数据和报告均被 `.gitignore` 排除，避免提交大文件或内部元数据。
 
-### 4. 实时重放专家演示
+### 4. 对比两种专家重放
+
+动作重放会把 23 维专家 action 重新交给 WBC 和 PhysX，适合验证控制闭环：
 
 ```bash
 ./scripts/start_ikea_replay.sh datasets/AssembleTableTask_1784627181912351.hdf5
 ```
 
-浏览器仍使用 <http://127.0.0.1:8765/viewer/>。状态栏显示当前帧、总帧数、百分比和 FPS。replay 会恢复 HDF5 中记录的机器人关节、机器人根位姿、桌板和四条桌腿初始状态。
+官方 state replay 逐帧恢复 HDF5 中的机器人和刚体状态，适合验证数据、场景和成功轨迹：
+
+```bash
+./scripts/start_ikea_state_replay.sh datasets/AssembleTableTask_1784627181912351.hdf5
+```
+
+state replay 默认播放前 600 帧。播放完整 7349 帧：
+
+```bash
+IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/AssembleTableTask_1784627181912351.hdf5
+```
+
+两种模式都使用 <http://127.0.0.1:8765/viewer/>。状态栏会明确显示 `replay` 或 `state replay`，并显示当前帧、百分比和 FPS。
 
 ## 23 维动作协议
 
@@ -124,15 +140,18 @@ systemctl --user stop iros-ikea-viewer.service
 - 末端位置最大漂移约 `2.4 cm`。
 - 实时仿真中机器人已放置到演示起点，桌面和待装配零件可见。
 - 首轮完整 open-loop replay 执行 7349/7349 帧，约 13.2 step/s，无异常终止或截断，但最终 `success=false`。
-- replay 中能够观察到双臂操作和机器人导航，说明数据到动作接口的基本链路成立；后续需要用专家状态轨迹定位开环漂移。
+- action replay 首个显著偏差出现在 frame 76：`right_elbow_joint` 误差约 `0.227 rad`。
+- 专家轨迹中首个桌腿 `Leg001_01` 到 frame 186 才移动超过 1 cm；frame 202 超过 3 cm，frame 403 位移达到约 0.777 m。
+- 官方 state replay 在 frame 0/160/180/187/202/220/300/403 的机器人和全部刚体位置误差均为 0，画面可见夹取和提起桌腿。
+- 因为关节偏差早于物体运动约 110 帧，当前首要问题是 action 到 WBC/关节跟踪链路；接触与 PhysX 求解会在偏差产生后继续放大误差，但不是第一个原因。
 
 实时查看器包含对官方镜像临时容器副本的兼容补丁：转发完整本地场景参数、支持字典形式的远程对象路径，并在 reset 后恢复演示中的机器人根位姿。不会修改宿主机上的 Docker 镜像。
 
 ## 下一阶段路线
 
-1. 记录 replay 每一帧机器人与桌腿状态，和 HDF5 专家状态计算误差曲线。
-2. 定位首个显著漂移帧，检查控制频率、动作延迟、reset 初始状态和四元数约定。
-3. 保存完整视频、成功判定和关键阶段截图。
+1. 在无物体接触条件下重放前 186 帧，记录 WBC 目标、关节目标和实际关节，隔离控制跟踪误差。
+2. 核对数据采集时与当前镜像的 WBC checkpoint、action delay、控制频率和归一化配置。
+3. 在控制跟踪对齐后恢复接触，比较 PhysX TGS 参数、接触力和夹爪约束。
 4. 运行镜像自带 OpenPI baseline，建立第二条官方对照线。
 5. 将 Lightwheel 300 条完整演示转换为训练索引，先训练行为克隆/ACT 类策略。
 6. 按“抓腿—对孔—插入—释放—换腿”拆成单技能闭环，再用状态机完成整桌。
@@ -157,11 +176,15 @@ systemctl --user stop iros-ikea-viewer.service
 │   └── README.md
 ├── scripts/
 │   ├── inspect_hdf5.py
+│   ├── analyze_expert_states.py
+│   ├── diagnose_replay.py
 │   ├── ikea_live.py
 │   ├── ikea_smoke.py
 │   ├── run_hdf5_inspection.sh
 │   ├── run_ikea_smoke.sh
-│   └── start_ikea_live.sh
+│   ├── start_ikea_live.sh
+│   ├── start_ikea_replay.sh
+│   └── start_ikea_state_replay.sh
 └── viewer/
     └── index.html
 ```

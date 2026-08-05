@@ -141,3 +141,42 @@
 - 这一结果将下一步问题收敛为“专家状态轨迹与 replay 实际状态的逐帧偏差”，而不是环境、动作维度或相机链路故障。
 
 下一轮将记录机器人和所有桌腿的逐帧实际状态，对齐 HDF5 `states/`，找出首个显著偏离的帧和对象。
+
+### Action replay 逐帧诊断
+
+- 新增实际状态采集、误差曲线和 `scripts/diagnose_replay.py`。
+- 600 帧对齐结果显示，首个显著偏差出现在 frame 76：
+  - 关节：`right_elbow_joint`
+  - 实际值：约 `-0.041 rad`
+  - 专家值：约 `-0.267 rad`
+  - 误差：约 `0.227 rad`
+- 专家右夹爪 action 在 frame 187 从 `-1`（打开）切换为 `+1`（关闭）。
+- `Leg001_01` 专家状态在 frame 186 首次移动超过 1 cm，frame 202 超过 3 cm，frame 403 最大位移约 0.777 m。
+- 将 seed 从 42 对齐为 HDF5 的 0，并在构建期/reset 后对齐机器人出生点，首个偏差仍不变。
+- 官方源码确认夹爪符号为 `-1 = open`、`+1 = close`。
+- 排除 seed、机器人出生点和夹爪符号作为首要原因。
+
+### 官方 state replay 对照
+
+- 审计镜像内 `robofinals/scripts/teleop/replay_demos.py`，确认官方 replay 使用 `ExecuteMode.REPLAY_STATE` 和 `env.reset_to(next_state, ..., is_relative=False)`，不是重新执行 actions。
+- 新增：
+  - `scripts/start_ikea_state_replay.sh`
+  - `scripts/analyze_expert_states.py`
+  - state replay RPC、网页状态显示、关键帧和写入后状态误差核验
+- 600 帧 state replay 完整执行，源演示 `success=true`。
+- frame 160/187/202/300/403 画面确认机器人接近、夹住并提起第一根桌腿。
+- frame 0/160/180/187/202/220/300/403 的机器人根姿态、关节位置和全部刚体位置误差均为 0；四元数误差仅有约 `3e-8` 至 `5e-8 rad` 的浮点噪声。
+- 该镜像的 Fabric/RTX transform 更新按 physics step 去重，而纯 `reset_to` 不推进 step。网页渲染因此使用一次 0.005 s 物理 pulse 刷新 Fabric，抓取画面后立即恢复同一专家状态；恢复后的状态继续通过零误差核验。
+
+### 当前归因
+
+- HDF5 专家状态、Scene02 资产和官方 state replay 链路正确，可以复现真实抓取。
+- action replay 在预期物体接触前约 110 帧已经出现 0.227 rad 关节误差，因此首要问题位于 action 到 WBC/关节跟踪链路，而不是接触求解器。
+- 物体姿态在 frame 167 开始异常，说明偏离后的非预期接触会继续放大误差；PhysX/TGS 接触参数仍需检查，但应放在 WBC 跟踪对齐之后。
+
+### 下一步验收条件
+
+1. 在禁用桌腿碰撞或移走桌腿的环境中执行前 186 帧 action，确认右肘偏差是否仍在 frame 76 出现。
+2. 记录每帧 WBC 输入、关节目标和实际关节，定位误差产生于 action 解析、WBC 输出还是低层 PD/求解。
+3. 对比演示采集和当前镜像的 WBC checkpoint、控制频率、action delay、归一化与滤波配置。
+4. 控制轨迹对齐后恢复接触，记录夹爪接触力并比较 PhysX TGS 参数。

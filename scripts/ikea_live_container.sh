@@ -17,11 +17,16 @@ sed -i \
   '/physics_backend=getattr(cfg, "physics_backend", None),/a\            enable_full_local_scene=getattr(cfg, "enable_full_local_scene", False),' \
   /workspace/robofinals/robofinals/scripts/env_server.py
 sed -i \
+  's/execute_mode=ExecuteMode.EVAL,/execute_mode=str_to_execute_mode(getattr(cfg, "execute_mode", "eval")),/' \
+  /workspace/robofinals/robofinals/scripts/env_server.py
+sed -i \
   '/task_name = f"Robocasa-/i\        if getattr(cfg, "init_robot_base_pos", None) is not None:\
             env_cfg.scene.robot.init_state.pos = tuple(cfg.init_robot_base_pos)\
         # IKEA live viewer: keep the robot at the demonstrated task start pose.\
         env_cfg.scene.robot.init_state.pos = (-2.41, 2.4, 0.78)\
-        env_cfg.scene.robot.init_state.rot = (0.0, 0.0, 0.0, 1.0)' \
+        env_cfg.scene.robot.init_state.rot = (0.0, 0.0, 0.0, 1.0)\
+        env_cfg.isaaclab_arena_env.embodiment.scene_config.robot.init_state.pos = (-2.41, 2.4, 0.78)\
+        env_cfg.isaaclab_arena_env.embodiment.scene_config.robot.init_state.rot = (0.0, 0.0, 0.0, 1.0)' \
   /workspace/robofinals/robofinals/scripts/env_server.py
 sed -i \
   '/for seg in path.split('\''.'\''):/a\            if isinstance(obj, dict):\
@@ -71,10 +76,52 @@ sed -i \
             rigid_object.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)\
         env.sim.forward()\
         return True\
+\
+    def scene_state_values(self):\
+        env = self._env.unwrapped\
+        rigid_objects = {}\
+        for name in env.scene.rigid_objects:\
+            rigid_objects[name] = {\
+                "root_pose": self.pose_values(f"scene.rigid_objects.{name}.data.root_pose_w"),\
+                "root_velocity": self.pose_values(f"scene.rigid_objects.{name}.data.root_vel_w"),\
+            }\
+        return {\
+            "robot": {\
+                "joint_names": list(env.scene.articulations["robot"].joint_names),\
+                "root_pose": self.pose_values("scene.articulations.robot.data.root_pose_w"),\
+                "root_velocity": self.pose_values("scene.articulations.robot.data.root_vel_w"),\
+                "joint_position": self.pose_values("scene.articulations.robot.data.joint_pos"),\
+                "joint_velocity": self.pose_values("scene.articulations.robot.data.joint_vel"),\
+            },\
+            "rigid_objects": rigid_objects,\
+        }\
+\
+    def reset_to_state(self, state):\
+        import torch\
+        env = self._env.unwrapped\
+\
+        def tensorize(value):\
+            if isinstance(value, dict):\
+                return {key: tensorize(item) for key, item in value.items()}\
+            return torch.tensor(value, device=env.device, dtype=torch.float32)\
+\
+        env_ids = torch.tensor([0], device=env.device, dtype=torch.int32)\
+        state_tensors = tensorize(state)\
+        _, extras = env.reset_to(state_tensors, env_ids, is_relative=False)\
+        # A state-only reset does not advance the Fabric physics-step counter.\
+        # Pulse one physics dt so RTX consumes the new transforms, capture the\
+        # cameras, then restore the exact expert state before returning.\
+        env.sim.step(render=False)\
+        env.sim.render_context.reset_transform_cadence()\
+        env.scene.update(env.physics_dt)\
+        observation = env.observation_manager.compute(update_history=False)\
+        observation = _tensors_to_cpu(observation)\
+        env.reset_to(state_tensors, env_ids, is_relative=False)\
+        return observation, _tensors_to_cpu(extras)\
 ' \
   /workspace/robofinals/robofinals/distributed/proxy.py
 sed -i \
-  's/"call", "getattr_value"/"call", "pose_values", "set_robot_pose", "set_initial_state", "getattr_value"/' \
+  's/"call", "getattr_value"/"call", "pose_values", "set_robot_pose", "set_initial_state", "scene_state_values", "reset_to_state", "getattr_value"/' \
   /workspace/robofinals/robofinals/distributed/proxy.py
 
 conda run --no-capture-output -n robofinals \
