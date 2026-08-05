@@ -180,3 +180,40 @@
 2. 记录每帧 WBC 输入、关节目标和实际关节，定位误差产生于 action 解析、WBC 输出还是低层 PD/求解。
 3. 对比演示采集和当前镜像的 WBC checkpoint、控制频率、action delay、归一化与滤波配置。
 4. 控制轨迹对齐后恢复接触，记录夹爪接触力并比较 PhysX TGS 参数。
+
+## 2026-08-05
+
+### Baseline 数据源切换
+
+- 当前训练主线切换为主办方官方数据 `BitRobot/G1_WBT_Dex1_Building-Children-Table`。
+- Lightwheel HDF5 暂时退出 baseline 输入，只保留为仿真 state replay 与控制链路诊断对照。
+- 不拉取 374 GB 全库，先选 episode 159 建立端到端最小数据链路。
+
+### 官方最小样本
+
+- 下载 `data/chunk-000/file-015.parquet`，大小 4,843,547 bytes。
+- episode 159 共 9,013 帧，30 FPS，约 300.4 秒，覆盖全部 8 个官方任务标签。
+- 状态/动作字段为 `ee_state[12]`、`hand_state[2]`、`robot_q_current[36]`、`ee_action[12]`、`hand_cmd[2]`、`robot_q_desired[36]`；全部数值有限。
+- 下载该 episode 引用的四个 RGB 文件，共 340,483,407 bytes；没有下载四路 IR 或其余 episode。
+- 四路 RGB 均为 H.264、640 × 480、30 FPS。抽帧显示 `cam_0/1` 为近似双目头部视角，`cam_2/3` 为手部近景；精确左右命名仍需采集配置确认。
+
+### Loader 验证
+
+- 新增官方 v3 Parquet 检查器、按 episode 断点续传 RGB 的下载器，以及 PyArrow + PyAV 最小 batch loader。
+- 实际加载 episode 159 的 frame 0、4506、9012，每帧同时读取四路 RGB 和六组状态/动作向量。
+- 解码图像形状均为 `[480, 640, 3]`，视频时间戳误差为 0 到约 6.1 微秒。
+- 比赛镜像内 LeRobot 版本为 `0.1.0`，其原生 loader 期望 `tasks.jsonl`，与官方数据的 v3 Parquet 元数据不兼容；当前最小 loader 已绕开该依赖冲突。
+
+### 接口边界
+
+- 官方 36 维真机配置由根位置 3、根四元数 `wxyz` 4 和 29 个关节组成。
+- 官方手指命令范围为 `5.5（张开）` 到 `0（闭合）`。
+- 官方数据集卡没有给出 `ee_action[12]` 的旋转编码，不能未经确认转换为仿真腕部四元数。
+- Isaac Sim 接收 23 维高层动作，不接受 36 维真机关节目标；官方数据可以用于策略训练，但不能直接作为仿真 state replay。
+
+### 下一步验收条件
+
+1. 从主办方采集配置确认 12 维末端姿态编码和四路相机名称。
+2. 建立官方 v3 数据的训练 adapter 与按技能采样器。
+3. 在少量官方 episode 上跑通 IKEA 专用策略的 overfit smoke test。
+4. 增加 23 维仿真策略头并在 Isaac Sim 做闭环评估。

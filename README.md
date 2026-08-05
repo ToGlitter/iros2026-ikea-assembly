@@ -11,14 +11,15 @@
 | 官方 Docker 镜像 | 已完整下载并核对 digest |
 | RTX 4090 + NVIDIA Container Toolkit | 已验证 |
 | Isaac Sim / AssembleTableTask | 已成功启动 |
-| Lightwheel HDF5 样本 | 已下载一条并完成 schema 审计 |
+| 官方 LeRobot episode 159 | Parquet + 四路 RGB 最小 batch 已加载 |
+| Lightwheel HDF5 样本 | 已完成诊断，暂不作为 baseline 输入 |
 | 23 维动作协议 | 已确认 |
 | Neutral hold baseline | 60/60 步成功 |
 | 三路相机实时画面 | 已完成 |
 | 完整演示动作重放 | 7349/7349 已跑通，`success=false` |
 | 官方 state replay | 已接入并验证抓取，关键状态误差为 0 |
 | 动作重放偏差定位 | frame 76 关节先偏离，早于 frame 186 物体运动 |
-| 官方 OpenPI baseline | 待运行 |
+| 官方数据训练 baseline | loader 已打通，策略适配与训练待完成 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
@@ -85,7 +86,21 @@ docker rm -f robofinals-ikea-live
 systemctl --user stop iros-ikea-viewer.service
 ```
 
-### 3. 审计 HDF5 演示
+### 3. 加载官方 LeRobot 最小样本
+
+当前默认数据源是 `BitRobot/G1_WBT_Dex1_Building-Children-Table`。本地最小样本为 episode 159，不需要下载 374 GB 全库：
+
+```bash
+./scripts/run_official_lerobot_inspection.sh
+./scripts/download_official_episode_rgb.py
+./scripts/run_official_lerobot_batch.sh
+```
+
+三条命令依次检查 Parquet、断点续传该 episode 引用的四路 RGB、实际加载首/中/末三帧。验证报告和抽帧保存在 `logs/`，不会提交 GitHub。
+
+比赛镜像内 LeRobot 为旧版 `0.1.0`，不能原生读取官方数据的 v3 Parquet 元数据；仓库中的最小 loader 使用镜像已有的 PyArrow/PyAV 绕过这个版本冲突。官方真机动作是 36 维，仿真动作是 23 维，两者不能直接 replay。
+
+### 4. 审计 HDF5 演示（可选诊断）
 
 将样本放入 `datasets/` 后运行：
 
@@ -95,7 +110,7 @@ systemctl --user stop iros-ikea-viewer.service
 
 报告默认写入 `logs/hdf5_schema.json`。数据和报告均被 `.gitignore` 排除，避免提交大文件或内部元数据。
 
-### 4. 对比两种专家重放
+### 5. 对比两种 HDF5 专家重放（可选诊断）
 
 动作重放会把 23 维专家 action 重新交给 WBC 和 PhysX，适合验证控制闭环：
 
@@ -149,12 +164,12 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 
 ## 下一阶段路线
 
-1. 在无物体接触条件下重放前 186 帧，记录 WBC 目标、关节目标和实际关节，隔离控制跟踪误差。
-2. 核对数据采集时与当前镜像的 WBC checkpoint、action delay、控制频率和归一化配置。
-3. 在控制跟踪对齐后恢复接触，比较 PhysX TGS 参数、接触力和夹爪约束。
-4. 运行镜像自带 OpenPI baseline，建立第二条官方对照线。
-5. 将 Lightwheel 300 条完整演示转换为训练索引，先训练行为克隆/ACT 类策略。
-6. 按“抓腿—对孔—插入—释放—换腿”拆成单技能闭环，再用状态机完成整桌。
+1. 从官方数据采集配置确认 `action.ee_action[12]` 的旋转编码，以及 `cam_0..3` 的精确安装名称。
+2. 建立官方真机字段到训练 schema 的 adapter；先保留原始 36 维关节目标和 2 维手指命令。
+3. 设计独立的仿真策略头，将视觉/任务表示输出为仿真需要的双腕位姿、夹爪、导航、基座和躯干共 23 维。
+4. 按 8 个官方技能建立采样与训练 manifest，先在少量 episode 上完成 overfit smoke test，再扩大下载。
+5. 训练 IKEA 专用 OpenPI/行为克隆 checkpoint，并在 Isaac Sim 中闭环评估；镜像默认的 FactoryTask1 checkpoint 不能冒充 IKEA baseline。
+6. Lightwheel HDF5 仅保留为仿真控制和 state replay 的诊断对照，不进入当前官方 baseline 训练主线。
 
 ## 官方资源
 
@@ -176,11 +191,16 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   └── README.md
 ├── scripts/
 │   ├── inspect_hdf5.py
+│   ├── inspect_official_lerobot.py
+│   ├── download_official_episode_rgb.py
+│   ├── load_official_lerobot_batch.py
 │   ├── analyze_expert_states.py
 │   ├── diagnose_replay.py
 │   ├── ikea_live.py
 │   ├── ikea_smoke.py
 │   ├── run_hdf5_inspection.sh
+│   ├── run_official_lerobot_inspection.sh
+│   ├── run_official_lerobot_batch.sh
 │   ├── run_ikea_smoke.sh
 │   ├── start_ikea_live.sh
 │   ├── start_ikea_replay.sh

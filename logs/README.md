@@ -11,6 +11,9 @@
 - `replay_errors.npz`、`replay_comparison.json`：action replay 逐帧误差。
 - `expert_state_analysis.json`：专家轨迹中的机器人/刚体运动区间。
 - `state_replay_verification.json`：state replay 写入后的关键帧状态误差。
+- `official_lerobot_sample.json`：官方 Parquet 样本的 schema、episode 索引和向量统计。
+- `official_lerobot_batch.json`：官方 episode 159 的图像/状态/动作 batch 验证。
+- `official_lerobot_batch_frames/`：batch 验证解码的四路 RGB 抽帧。
 - `*.log`：Isaac Sim / env server 日志。
 
 这些文件可能很大，或含内部数据路径和元数据，因此不会同步到 GitHub。
