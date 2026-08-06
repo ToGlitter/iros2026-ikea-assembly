@@ -11,7 +11,7 @@
 | 官方 Docker 镜像 | 已完整下载并核对 digest |
 | RTX 4090 + NVIDIA Container Toolkit | 已验证 |
 | Isaac Sim / AssembleTableTask | 已成功启动 |
-| 官方 LeRobot episode 159 | Parquet + 四路 RGB 最小 batch 已加载 |
+| 官方 LeRobot episodes 155–159 | 48,755 帧 + 四路 RGB 已下载并校验 |
 | 官方 state-only BC smoke | 2048 帧训练链路已收敛，非仿真策略 |
 | Lightwheel HDF5 样本 | 已完成诊断，暂不作为 baseline 输入 |
 | 23 维动作协议 | 已确认 |
@@ -20,7 +20,7 @@
 | 完整演示动作重放 | 7349/7349 已跑通，`success=false` |
 | 官方 state replay | 已接入并验证抓取，关键状态误差为 0 |
 | 动作重放偏差定位 | frame 76 关节先偏离，早于 frame 186 物体运动 |
-| 官方数据训练 baseline | loader 已打通，策略适配与训练待完成 |
+| 官方视觉 BC baseline | 五条演示训练完成，episode 159 独立验证完成 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
@@ -101,6 +101,20 @@ systemctl --user stop iros-ikea-viewer.service
 
 前两条命令检查 Parquet 并断点续传视频，第三条实际加载首/中/末三帧，第四条用镜像内 G1 URDF 做 FK 编码审计，第五条训练一个 state-only MLP smoke baseline。验证报告、抽帧和 checkpoint 保存在 `logs/`，不会提交 GitHub。
 
+五条演示的下载规划与视觉行为克隆 baseline：
+
+```bash
+./scripts/run_official_episode_planner.sh
+OFFICIAL_VISUAL_STEPS=5000 ./scripts/run_official_visual_baseline.sh
+OFFICIAL_VISUAL_STEPS=5000 OFFICIAL_VISUAL_VALIDATION_EPISODE=159 \
+  ./scripts/run_official_visual_baseline.sh
+OFFICIAL_TEMPORAL_STEPS=5000 ./scripts/run_official_temporal_baseline.sh
+```
+
+当前缓存从 episodes 155–159 每条均匀抽取 256 帧，每帧输入四路 `64 × 64` RGB、50 维 proprioception 和任务标签，预测 50 维官方原始动作。严格实验只用 episodes 155–158 训练，并把 episode 159 整条留作验证；它验证的是跨演示预测能力，尚未连接 Isaac Sim 的 23 维控制接口。
+
+时序 baseline 对每个锚点解码 `[-6, -4, -2, 0]` 四个历史时刻，并预测当前开始的连续 8 帧动作。视频帧通过 Parquet 时间戳加 episode 在共享 MP4 中的 `from_timestamp` 定位，PyAV 从前一关键帧顺序解码；当前五条数据的最大时间戳匹配误差约 14 微秒。残差版相对当前机器人状态预测动作，且让末端、夹爪、关节三组损失等权。
+
 比赛镜像内 LeRobot 为旧版 `0.1.0`，不能原生读取官方数据的 v3 Parquet 元数据；仓库中的最小 loader 使用镜像已有的 PyArrow/PyAV 绕过这个版本冲突。官方真机动作是 36 维，仿真动作是 23 维，两者不能直接 replay。
 
 ### 4. 审计 HDF5 演示（可选诊断）
@@ -168,9 +182,9 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 ## 下一阶段路线
 
 1. 从主办方采集配置确认 `action.ee_action[12]` 的精确 TCP 定义和 `cam_0..3` 的安装名称；当前 FK 已确认根坐标系更合理，但不能替代 TCP 标定。
-2. 把视觉输入接入现有官方字段 adapter，先在 episode 159 上做图像条件的 overfit smoke test。
-3. 设计独立的仿真策略头，将视觉/任务表示输出为仿真需要的双腕位姿、夹爪、导航、基座和躯干共 23 维。
-4. 按 8 个官方技能建立采样与训练 manifest，再扩大下载范围。
+2. 增加逐技能误差和阶段平衡采样，处理五条演示中技能时长严重不均衡的问题。
+3. 组合单帧直接末端预测与时序残差夹爪/关节预测，并在独立 episode 上统一验收。
+4. TCP/frame 定义确认后设计仿真策略头，输出双腕位姿、夹爪、导航、基座和躯干共 23 维。
 5. 训练 IKEA 专用 OpenPI/行为克隆 checkpoint，并在 Isaac Sim 中闭环评估；镜像默认的 FactoryTask1 checkpoint 不能冒充 IKEA baseline。
 6. Lightwheel HDF5 继续作为仿真控制和 state replay 的诊断对照，不进入当前官方 baseline 训练主线。
 
@@ -199,6 +213,10 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── load_official_lerobot_batch.py
 │   ├── analyze_official_ee_encoding.py
 │   ├── train_official_state_baseline.py
+│   ├── plan_official_episodes.py
+│   ├── download_official_manifest.py
+│   ├── train_official_visual_baseline.py
+│   ├── train_official_temporal_baseline.py
 │   ├── analyze_expert_states.py
 │   ├── diagnose_replay.py
 │   ├── ikea_live.py
@@ -208,6 +226,9 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── run_official_lerobot_batch.sh
 │   ├── run_official_ee_encoding_analysis.sh
 │   ├── run_official_state_baseline.sh
+│   ├── run_official_episode_planner.sh
+│   ├── run_official_visual_baseline.sh
+│   ├── run_official_temporal_baseline.sh
 │   ├── run_ikea_smoke.sh
 │   ├── start_ikea_live.sh
 │   ├── start_ikea_replay.sh

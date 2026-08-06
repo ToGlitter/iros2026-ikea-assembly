@@ -16,6 +16,15 @@
 - `official_lerobot_batch_frames/`：batch 验证解码的四路 RGB 抽帧。
 - `official_ee_encoding.json`：官方末端字段与 G1 URDF FK 的编码/坐标系对照。
 - `official_state_baseline.json`、`official_state_baseline.pt`：官方 state-only BC smoke 指标和本地 checkpoint。
+- `official_five_episode_manifest.json`：episodes 155–159 的 Parquet 与四路 RGB 文件规划。
+- `official_visual_samples.npz`：五条演示均匀采样后的本地视觉训练缓存。
+- `official_visual_baseline.json`、`official_visual_baseline.pt`：五条轨迹内随机留出的视觉 BC 指标和 checkpoint。
+- `official_visual_baseline_holdout_159.json`、`official_visual_baseline_holdout_159.pt`：用 155–158 训练、159 独立验证的视觉 BC 结果。
+- `official_five_file_014_audit.json`、`official_five_file_015_audit.json`：五条目标 episode 所在 Parquet 的完整数值审计。
+- `official_temporal_samples_h4_c8.npz`：4 个历史时刻和 8 步动作块的五条演示缓存。
+- `official_temporal_baseline_holdout_159.json`、对应 `.pt`：直接动作时序模型结果。
+- `official_temporal_residual_baseline_holdout_159.json`、对应 `.pt`：分字段等权的残差时序模型结果。
+- `official_temporal_hybrid_baseline_holdout_159.json`、对应 `.pt`：末端直接、夹爪和关节残差的混合目标对照。
 - `*.log`：Isaac Sim / env server 日志。
 
 这些文件可能很大，或含内部数据路径和元数据，因此不会同步到 GitHub。

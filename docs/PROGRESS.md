@@ -183,6 +183,45 @@
 
 ## 2026-08-05
 
+### 挑战任务与八个官方技能
+
+本挑战的目标不是只安装一条桌腿，而是由 Unitree G1 + Dex1-1 完成 IKEA UTTER 儿童桌的完整装配流程。官方演示覆盖以下八个技能标签：
+
+1. `insert table leg to table base`：将桌腿插入桌面底座。
+2. `move to table`：机器人移动到桌子附近。
+3. `move table base`：移动桌面底座或调整其位置。
+4. `flip table`：翻转桌面/桌面底座。
+5. `rotate leg to tighten`：旋转桌腿完成拧紧。
+6. `pick table leg`：抓取桌腿。
+7. `rotate table base`：旋转桌面底座以便装配。
+8. `building children table`：完成儿童桌组装的整体任务标签。
+
+这些是行为技能名称，不应直接假设为连续的 task index 顺序；实际 index 以本地 `meta/tasks.parquet` 为准。一个 episode 是一次连续完整演示，不是一帧。
+
+### 官方数据与 Lightwheel 数据的联合使用边界
+
+- 官方 LeRobot 数据是主办方采集的真实机器人数据，包含四路 RGB 和 50 维状态/动作字段：`ee_action[12]`、`hand_cmd[2]`、`robot_q_desired[36]`。
+- Lightwheel HDF5 是仿真演示数据，包含 Isaac Sim 状态、三路相机和已经对应仿真控制器的 23 维 action；300 条是数据集规模，本机目前只保留一条约 605 MB 的诊断样本。
+- 两种数据可以用于同一个训练体系，但不能未经适配直接拼接。两者需要统一技能标签、相机分布、坐标系、夹爪范围、控制频率、action delay 和 TCP/frame 定义。
+- 推荐分阶段使用：官方数据用于视觉/任务表示和动作趋势预训练，Lightwheel 数据用于 23 维 Isaac Sim 动作头、仿真状态和闭环微调。
+- 在官方 `ee_action[12]` 的 TCP/frame 与旋转编码得到主办方确认前，不能伪造 50D→23D 映射，也不能把官方动作直接 replay 到 Isaac Sim。
+
+### 截至本日的真实完成度
+
+```text
+仿真环境与网页查看器             已跑通
+官方 Docker、GPU、Isaac Sim      已验证
+官方 Parquet/RGB 数据读取        已跑通
+官方 episodes 155–159            已下载并校验，共 48,755 帧
+官方五条数据视觉 BC              已训练，并完成 episode 159 独立验证
+Lightwheel 单条 state replay      已成功复现抓取和提腿状态
+Lightwheel action replay          可完整执行，但最终 success=false
+50D 官方动作到 23D 仿真动作       尚未完成
+完整自主装桌策略                 尚未完成
+```
+
+当前 action replay 的首个明显偏差出现在 frame 76 的右肘关节，早于桌腿在 frame 186 的显著运动。因此首要待查项是 action 解析、WBC、低层控制频率/延迟和归一化，而不是先假定 PhysX 接触求解器出错。
+
 ### Baseline 数据源切换
 
 - 当前训练主线切换为主办方官方数据 `BitRobot/G1_WBT_Dex1_Building-Children-Table`。
@@ -233,3 +272,39 @@
 1. 获取主办方采集端 TCP/frame 定义，消除 FK 审计中的末端偏移。
 2. 加入四路 RGB 输入，做 episode 159 图像条件 overfit。
 3. 再实现显式的 23 维仿真策略头，并用 Lightwheel state replay/Isaac Sim 做闭环验收。
+
+### 五条官方演示视觉 BC
+
+- 选择并下载 episodes 155–159，共 48,755 帧、约 1.5 GB；五条均覆盖 8 个官方任务标签。
+- 完整扫描两份 Parquet，目标 episode 行数与 metadata 一致，六组状态/动作向量均为有限数值。
+- 建立下载 manifest、四路 RGB 解码缓存和紧凑视觉 + proprioception 行为克隆训练脚本。
+- 每条演示均匀采样 256 帧，共 1,280 个样本；每个样本包含四路 `64 × 64` RGB、50 维 proprioception、任务 one-hot，目标为官方 50 维原始动作。
+- 五条轨迹内随机留出 10% 的 5,000 步实验：训练归一化 MSE `0.0173`，验证 MSE `0.1056`，但该划分可能受相邻帧相似性影响。
+- 严格 leave-one-episode-out 实验只用 155–158 的 1,024 个样本训练，把 159 的 256 个样本完整留作验证：训练归一化 MSE `0.0152`，验证 MSE `0.1608`。
+- 独立验证 RMSE：`ee_action 0.0817`、`hand_cmd 0.2806`、`robot_q_desired 0.0366 rad`。夹爪命令是当前最明显短板。
+- checkpoint 和详细 JSON 只保存在本地 `logs/`，本轮未同步 GitHub。
+
+### 五条训练后的下一步
+
+1. 加入短时序输入和 action chunk，避免单帧模型无法辨别动作阶段，并改善夹爪开合预测。
+2. 对 8 个任务阶段做采样平衡和逐技能指标，确认误差集中在哪些装配阶段。
+3. TCP 定义确认后建立显式 23 维 Isaac Sim 策略头，先在无接触短 rollout 验收坐标系、动作范围和控制频率。
+4. 通过短 rollout 后再进入接触抓取闭环；官方 50 维原始动作不能直接送入 23 维仿真接口。
+
+### 短时序与 action chunk 实验
+
+- 新增 `scripts/train_official_temporal_baseline.py` 和对应 Docker 启动脚本。
+- 每个样本使用 `[-6, -4, -2, 0]` 四个历史时刻，覆盖 30 FPS 下约 0.2 秒；共享 CNN 编码四路 RGB，GRU 聚合视觉、50 维 proprioception 和任务标签。
+- 每个锚点预测当前开始连续 8 帧、每帧 50 维的官方动作，action chunk 覆盖约 0.267 秒。
+- 视频使用 Parquet timestamp 加 manifest `from_timestamp` 定位共享 MP4 内的 episode 片段，从目标前 2 秒关键帧开始顺序解码；最大时间误差约 14 微秒。
+- 直接动作版训练 MSE `0.0139`、独立验证 MSE `0.2478`；首步 RMSE 为末端 `0.0959`、夹爪 `0.3432`、关节 `0.0415 rad`，没有超过单帧 baseline。
+- 残差版改为相对当前 50 维状态预测动作，并让末端、夹爪、关节三组归一化损失等权。独立验证首步 RMSE 为末端 `0.1039`、夹爪 `0.1245`、关节 `0.0266 rad`。
+- 相比单帧 baseline，残差时序版夹爪改善约 56%、关节改善约 27%，但末端误差增加约 27%。因此不能声称时序模型整体胜出。
+- 8 步完整 chunk 的独立验证 RMSE 为末端 `0.1113`、夹爪 `0.1857`、关节 `0.0403 rad`。
+- 另测“末端直接预测、夹爪和关节残差预测”的混合目标；首步 RMSE 为末端 `0.1122`、夹爪 `0.1263`、关节 `0.0247 rad`。仅关节略有改善，末端进一步退化，因此不作为默认模型。
+
+### 时序实验结论
+
+1. 夹爪与关节适合相对当前状态的残差目标；末端在现有五条数据上仍以原单帧直接模型最好。混合目标实验没有同时保住三组指标。
+2. 五条数据足以验证训练设计，但不足以证明长任务泛化；扩大数据前先补逐技能指标和阶段平衡采样。
+3. 时序模型仍输出官方 50 维动作，必须等 TCP/frame 定义明确后再接 23 维 Isaac Sim 策略头。
