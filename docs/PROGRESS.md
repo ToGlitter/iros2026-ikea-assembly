@@ -308,3 +308,94 @@ Lightwheel action replay          可完整执行，但最终 success=false
 1. 夹爪与关节适合相对当前状态的残差目标；末端在现有五条数据上仍以原单帧直接模型最好。混合目标实验没有同时保住三组指标。
 2. 五条数据足以验证训练设计，但不足以证明长任务泛化；扩大数据前先补逐技能指标和阶段平衡采样。
 3. 时序模型仍输出官方 50 维动作，必须等 TCP/frame 定义明确后再接 23 维 Isaac Sim 策略头。
+
+## 2026-08-06
+
+### Lightwheel 完整 state replay 与三视角录制
+
+- 发现并修复 `IKEA_STATE_REPLAY_MAX_FRAMES=` 未生效的问题：Bash 的 `${VAR:-600}` 会把显式空值也替换成 600，已改为仅未设置变量时使用 600。
+- 修复后完整播放 Lightwheel `demo_0`：`7349/7349` 帧，`source_success=true`，最终速度约 `8.94 step/s`，state replay verification 无误差报告。
+- 第二遍完整播放同时录制三路网页相机，生成根目录本地视频 [ikea_state_replay_three_view.mp4](/home/lumin/codexwork/iros2026-ikea-assembly/ikea_state_replay_three_view.mp4)：`7349` 帧、`10 FPS`、`672×264`、约 `734.9 s`、约 `51 MB`。
+- 视频是 state replay 的可视化证明，不是重新执行策略 action；视频和 HDF5 均不上传 GitHub。
+
+### 官方 episode 159 与 Lightwheel demo_0 单样本对照
+
+- 新增 `scripts/compare_official_lightwheel_single_demo.py` 和 `scripts/run_official_lightwheel_single_compare.sh`，本轮只做 schema、视觉、时序和接口审计，不假设预训练或微调关系。
+- 官方 episode 159：`9,013` 帧、30 FPS、四路 `640×480` RGB，官方状态/动作目标为 `12+2+36=50` 维。
+- Lightwheel demo_0：`7,349` 帧、仿真 `dt=0.005`、decimation 4、控制频率 50 Hz，三路 `224×224` RGB，仿真 action 为 23 维，源演示 `success=true`。
+- 官方任务标签覆盖八个技能，但抽样 frame 的 `task_index` 并不按叙事顺序单调变化（例如 frame 0、4506、9012 分别落在不同标签），因此下一步必须先做逐技能连续区间统计，不能只按标签顺序切片。
+- 视觉抽样对照图已生成在 `logs/official159_lightwheel_comparison_frames/`：官方四路在上排，Lightwheel 三路在下排。当前只能提出候选共同视角，不能在官方相机外参未确认时擅自决定 `cam_0..3` 的左右对应。
+- 当前第一版结论：两种数据应共享任务/视觉 adapter，但保留官方 50D 与仿真 23D 动作头分离；先统一三路共同视角和时间采样，再确认 TCP/frame、夹爪范围、action delay 与坐标系。
+
+### 下一步（不预设预训练/微调关系）
+
+1. 对官方 533 episodes 的 8 个 task label 做连续区间和时长统计，并对 Lightwheel 300 条 HDF5 建立轻量 manifest。
+2. 确认官方四路相机安装/外参后，建立三路共同视角 adapter，并保留第四路可选输入。
+3. 分别审计官方 50D 和 Lightwheel 23D 的时间延迟、夹爪范围、坐标系和动作变化，再决定 VLA（如 Pi0.5）输出头如何接入。
+4. 只有完成无接触短 rollout 的动作协议验收后，才进入接触抓取和完整装桌评估。
+
+### 八技能连续区间与本地数据 manifest
+
+- 新增 `scripts/analyze_official_task_segments.py`：对官方 episodes 155–159 按帧顺序压缩连续 `task_index` 区间。
+- 五条合计 `48,755` 帧，分为 132 个连续区间；每条演示通常有 24–27 个区间，包含多次“抓取桌腿 → 插入 → 旋转拧紧 → 旋转底座”的循环。
+- 五条合计技能帧占比：`rotate leg to tighten` `22,935` 帧（47.04%），`pick table leg` `10,720`（21.99%），`insert table leg to table base` `5,235`（10.74%），`rotate table base` `4,721`（9.68%），`flip table` `2,630`（5.39%），`building children table` `1,592`（3.27%），`move table base` `509`（1.04%），`move to table` `413`（0.85%）。
+- 因此原始帧数采样会严重偏向“旋转拧紧”，下一版 VLA 数据 adapter 必须支持按技能/区间平衡采样，并保留完整轨迹顺序。
+- 新增 `scripts/build_lightwheel_manifest.py`：扫描本机 Lightwheel HDF5。当前本地覆盖 `1` 个文件、`1` 个 demo、`7,349` 帧、三路 `224×224` RGB、23 维 action、52 个 checkpoint，SHA-256 为 `7eb9674f...0724d94f`；这不代表远端数据集只有一条。
+- 当前第一步审计结论：官方数据拆分提供逐帧技能监督，Lightwheel 数据提供完整仿真状态和 23D 控制；两者先通过 VLA 输入/动作 adapter 对齐，不直接合并原始 action。
+
+### 远程数据集清单与官方 533 条 episode 元数据审计
+
+- 新增 `scripts/build_remote_hf_manifest.py`：遵循 Hugging Face tree API 的 HTTP `Link` opaque cursor 分页，只读取目录元数据，不下载 HDF5、Parquet frame data 或视频正文。
+- Lightwheel 远程 `data/` 清单已确认恰好 `300` 个 HDF5 文件，逻辑总量 `262,532,790,824` bytes（约 `262.5 GB`），单文件 `605,895,638`–`1,140,544,003` bytes，平均约 `875.1 MB`。
+- Lightwheel 文件并非 300 个独立内容：按 LFS SHA-256 OID 只有 `114` 个唯一内容，存在 `64` 组重复内容；这说明下载/训练 manifest 应按内容 OID 去重，同时保留原始文件名到 demo 的映射。
+- 新增 `scripts/download_hf_manifest_files.py`，只下载并校验官方 `meta/episodes/**/*.parquet`；本轮补齐 28 个文件，共 `9,838,980` bytes，已有文件按大小和 SHA-256 复用。
+- 新增 `scripts/analyze_official_episode_metadata.py`，对全部官方 episode 元数据完成审计：`533/533` 条，episode index 连续 `0..532`，长度总和 `6,276,443` 帧，与 `meta/info.json` 完全一致；未读取 frame-level data Parquet 或视频内容。
+- 官方 episode 长度范围 `215`–`35,167` 帧，均值 `11,775.69`、中位数 `11,349`（30 FPS）。八个技能是 episode 级任务词汇，不是逐帧时长；`building children table` 出现在全部 533 条，`move table base` 出现在 368 条，其余技能出现次数也已记录在 `logs/official_all_episode_metadata.json`。
+- 全量元数据引用 `52` 个 data Parquet 文件；四路 RGB 视频文件数分别为 cam_0 `254`、cam_1 `246`、cam_2 `215`、cam_3 `194`，IR 文件未纳入当前训练计划。
+
+本轮结论：已经从“五条样本的帧级审计”推进到“全量 533 条的元数据完整性审计”，同时确认 Lightwheel 的 300 条规模和内容重复结构。下一步应按优先级下载官方 52 个 data Parquet（先不下载视频），在全量帧级别统计 8 个技能的连续区间和长尾分布，再据此实现按技能/区间平衡采样；Lightwheel 则按 LFS OID 选择少量去重样本做 23D 仿真控制头训练和闭环验证。
+
+### 官方全量帧级技能区间审计
+
+- 获取并校验官方 52 个 data Parquet，共 `3,256,508,902` bytes（约 `3.26 GB`）；下载器支持 HTTP Range 断点续传、自动重试和 SHA-256 校验。全程没有下载视频。
+- 新增全量 manifest：`logs/official_all_episode_manifest.json`；运行现有 `scripts/analyze_official_task_segments.py` 得到 `logs/official_all_task_segments.json`。
+- 全部 `533` 条 episode 的 `6,276,443` 帧均成功对齐 metadata，观测帧数与 episode length 无一不符。
+- 全量共有 `13,930` 个连续 task_index 区间；每条 episode 区间数范围 `1`–`37`，均值 `26.14`。这进一步说明一个 episode 不是一个单技能片段，而是多轮抓取、插入、拧紧和底座旋转的完整演示。
+- 全量技能帧占比：`rotate leg to tighten` `3,084,794`（49.15%）、`insert table leg to table base` `1,000,211`（15.94%）、`pick table leg` `975,324`（15.54%）、`rotate table base` `623,149`（9.93%）、`flip table` `292,077`（4.65%）、`move to table` `165,914`（2.64%）、`building children table` `85,541`（1.36%）、`move table base` `49,433`（0.79%）。
+- 因此五条样本中观察到的“旋转拧紧占 47.04%”不是偶然，扩大到全量后仍为最大类别且接近一半；直接按原始帧均匀抽样会显著压低 `move table base`、`building children table` 和移动阶段的学习权重。
+
+当前数据侧已具备 VLA adapter 的输入：全量官方状态/动作和逐帧技能区间；下一步是实现按 episode 保持顺序、按技能/连续区间重加权的 sampler，并将同一 sampler 的统计应用到五条视觉 baseline 和后续 Pi0.5 适配训练。
+
+### 第一版技能平衡 sampler
+
+- 新增 `scripts/build_balanced_segment_sampler.py`，对每个技能的全部连续区间按全局帧序均匀取样，再按 `(episode_index, frame_index)` 恢复时间顺序。
+- 用每技能 1,000 个 anchor 的 smoke manifest 验证成功：共 8,000 个样本，八类各 1,000 个；输出 `logs/official_balanced_segments_1000.json`。
+- 该 manifest 只保存 episode/frame/task 索引，不复制图像或状态数据；下游 loader 可据此读取 timestamp、四路视频和 50D 官方动作，并继续构造历史窗口/action chunk。
+- 这一步解决的是数据采样偏置，不等于模型训练或 Isaac Sim 闭环成功；下一步将把 sampler 接到视觉/时序 baseline 的 cache builder，再比较原始帧比例与平衡比例下的逐技能误差。
+- 已将 anchor manifest 接入 `scripts/train_official_visual_baseline.py` 的可选 `--anchor-manifest` 参数，并新增 `scripts/run_official_balanced_visual_baseline.sh`。episodes 155–159 的 smoke manifest 为每技能 160 个 anchor、共 1,280 个样本，episode 159 仍可作为完整留出集。
+- 当前会话无法访问 Docker socket（socket 映射为 `nobody:nogroup`），因此本轮完成了代码接入和 manifest 校验，但尚未在 GPU 容器内执行新的视觉训练；恢复 Docker 访问后直接运行该 runner 即可。
+- 新增 `scripts/analyze_balanced_action_distribution.py`，对 1,280 个平衡 anchor 与每 episode 256 个的均匀抽样做了动作分布对照。均匀抽样的技能计数为 `rotate leg to tighten=604`、`pick table leg=269`、`insert table leg=138`，而平衡抽样为八类各 `160`；这证明当前采样偏置会直接改变训练批次中的技能比例。
+- 平衡采样还提高了夹爪命令覆盖：五条数据中均匀抽样左/右 hand_cmd 均值约 `1.27/3.01`，平衡抽样约 `2.17/3.21`，但两者范围都保持在 `0`–`4.5`，没有改变原始动作协议。
+
+### 平衡视觉 baseline 已在宿主机 GPU 容器中完成
+
+- 用户在宿主机终端运行 `./scripts/run_official_balanced_visual_baseline.sh` 成功；当前 Codex 受限会话不能直接访问 Docker socket，但 runner 的 `sg docker` fallback 可以在宿主机工作。
+- 训练使用 episodes 155–158，episode 159 留出；平衡 anchor 共 1,280 个，训练 1,039 个、验证 241 个，CUDA 训练 5,000 步。
+- 归一化验证 MSE：`0.17399`。验证 RMSE：`ee_action=0.1358`、`hand_cmd=0.2577`、`robot_q_desired=0.0436 rad`。
+- 与此前均匀抽样视觉 baseline 对照：夹爪 RMSE 从 `0.2806` 降到 `0.2577`（改善约 8.2%）；末端 RMSE 从 `0.0817` 升到 `0.1358`，关节 RMSE 从 `0.0366` 升到 `0.0436 rad`。因此平衡采样改善了夹爪覆盖，但没有整体优于均匀采样，不能直接替换默认 baseline。
+- checkpoint 和报告：`logs/official_balanced_visual_baseline_holdout_159.{pt,json}`，均为本地产物，不上传 GitHub。
+
+当前结论：保留平衡 sampler 作为技能覆盖实验分支；默认模型仍使用均匀采样，下一步应加入短时序/action chunk 或按技能设置非等量权重，避免末端动作回归因稀释高频拧紧阶段而退化。
+
+### 第一阶段 32 条官方 + 16 条仿真实验
+
+- 新增 `scripts/select_experiment_data.py`，生成 `logs/first_stage_experiment_selection.json`：官方 24/4/4（训练/验证/测试），Lightwheel 12/2/2；Lightwheel 按精确 LFS OID 去重，并保留本机已验证 demo。
+- 官方第一阶段数据已下载并校验：32 条 episode、115 个共享 RGB MP4、约 `18.4 GB`；四路 RGB 均可复用，未下载 IR。
+- Lightwheel 第一阶段数据已下载并校验：16 个唯一 HDF5、约 `14.1 GB`；共 19 个 demo，其中 16 个成功 demo、3 个短失败 demo；成功 demo 合计 `184,727` 帧，全部为 23D action、三路 224×224 RGB、50 Hz 控制。
+- 新增 `scripts/run_official_first_stage_32_visual.sh` 和多 episode holdout 支持。官方视觉 BC 使用 8,192 个样本、CUDA 5,000 步：训练 6,144、验证 1,024、测试 1,024。
+- 官方 32 条视觉结果：验证归一化 MSE `0.07868`，测试归一化 MSE `0.11585`；测试 RMSE 为 `ee_action=0.0617`、`hand_cmd=0.1866`、`robot_q_desired=0.0493 rad`。
+- 新增 `scripts/train_lightwheel_state_action_head.py` 和 `scripts/run_lightwheel_first_stage_state_head.sh`。仿真 state-only 头输入 79D 机器人状态、输出 23D action，使用 6,144/1,024/1,024 个 train/validation/test 样本、CUDA 5,000 步。
+- Lightwheel 23D state-only 结果：验证归一化 MSE `0.05158`，测试归一化 MSE `0.06282`；测试 RMSE 为 grippers `0.1701`、wrists `0.0265`、navigation `0.0332`，base height 和 torso RPY 接近常量。
+- 新增 `scripts/train_lightwheel_visual_action_head.py` 和 `scripts/run_lightwheel_first_stage_visual_head.sh`。三路 RGB + 79D proprioception 的 23D 视觉头使用 3,072/512/512 个 train/validation/test 样本；测试归一化 MSE `0.07979`，测试 RMSE 为 grippers `0.1697`、wrists `0.0300`、navigation `0.0361`。
+- 与 state-only 头相比，三路 RGB 视觉头没有改善 held-out 动作误差（夹爪几乎相同，wrist/navigation 略差），说明 16 条数据和单帧输入还不足以证明视觉闭环优势；state-only 头仍保留为控制协议 smoke baseline。
+- 这三组结果仍是监督动作预测 baseline，不是闭环成功率；官方模型尚未接 Isaac Sim，仿真模型也尚未用预测 action 做 rollout。下一步是对 held-out HDF5 做无接触 action rollout，先定位 23D action 到 WBC 的跟踪误差，再进入接触抓取。

@@ -12,6 +12,9 @@ logs/*.json
 logs/*.npz
 logs/ikea_smoke_frames/
 logs/official_lerobot_batch_frames/
+logs/official159_lightwheel_comparison_frames/
+logs/official_five_task_segments.json
+logs/lightwheel_local_manifest.json
 logs/live/
 *.pid
 
@@ -25,6 +28,7 @@ logs/live/
 checkpoints/
 datasets/
 videos/
+*_three_view.mp4
 
 # Python and editor state
 __pycache__/

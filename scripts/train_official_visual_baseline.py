@@ -35,6 +35,8 @@ def decode_frames(
     images = []
     errors = []
     target_index = 0
+    last_frame = None
+    last_time = None
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
         seek_time = max(0.0, float(timestamps[0]) - 2.0)
@@ -46,14 +48,35 @@ def decode_frames(
         )
         for frame in container.decode(stream):
             frame_time = float(frame.time)
+            last_time = frame_time
+            last_frame = frame
+            if target_index == len(timestamps):
+                break
             if frame_time < float(timestamps[target_index]) - 0.5 / fps:
                 continue
-            image = frame.to_image().resize((image_size, image_size), Image.Resampling.BILINEAR)
-            images.append(np.asarray(image, dtype=np.uint8))
+            image = np.asarray(
+                frame.to_image().resize((image_size, image_size), Image.Resampling.BILINEAR),
+                dtype=np.uint8,
+            )
+            images.append(image)
             errors.append(frame_time - float(timestamps[target_index]))
             target_index += 1
             if target_index == len(timestamps):
                 break
+        # Some shared MP4 segments end one frame before the Parquet timestamp
+        # due to floating-point/container rounding. Reuse the final decoded
+        # frame when the missing target is within one sampling interval.
+        while target_index < len(timestamps) and last_frame is not None and last_time is not None:
+            error = last_time - float(timestamps[target_index])
+            if abs(error) > 1.5 / fps:
+                break
+            image = np.asarray(
+                last_frame.to_image().resize((image_size, image_size), Image.Resampling.BILINEAR),
+                dtype=np.uint8,
+            )
+            images.append(image)
+            errors.append(error)
+            target_index += 1
     if target_index != len(timestamps):
         raise RuntimeError(f"decoded {target_index}/{len(timestamps)} targets from {path}")
     return np.stack(images), float(np.max(np.abs(errors)))
@@ -74,6 +97,7 @@ def build_cache(
     manifest: dict,
     samples_per_episode: int,
     image_size: int,
+    anchor_manifest: dict | None = None,
 ) -> dict[str, np.ndarray]:
     table_cache = {}
     images = []
@@ -84,6 +108,14 @@ def build_cache(
     frame_ids = []
     max_timestamp_error = 0.0
     fps = float(manifest["fps"])
+    anchors_by_episode: dict[int, list[int]] = {}
+    if anchor_manifest is not None:
+        for sample in anchor_manifest.get("samples", []):
+            anchors_by_episode.setdefault(int(sample["episode_index"]), []).append(
+                int(sample["frame_index"])
+            )
+        for episode_index in anchors_by_episode:
+            anchors_by_episode[episode_index] = sorted(set(anchors_by_episode[episode_index]))
     for episode in manifest["episodes"]:
         data_path = dataset_root / episode["data_path"]
         if data_path not in table_cache:
@@ -97,9 +129,23 @@ def build_cache(
         table = table_cache[data_path]
         all_episode_ids = np.asarray(table["episode_index"].combine_chunks().to_numpy())
         row_indices = np.flatnonzero(all_episode_ids == episode["episode_index"])
-        sample_count = min(samples_per_episode, row_indices.size)
-        within_episode = np.linspace(0, row_indices.size - 1, sample_count, dtype=np.int64)
-        selected = table.take(row_indices[within_episode])
+        anchor_frames = anchors_by_episode.get(int(episode["episode_index"]))
+        if anchor_frames:
+            frame_values = np.asarray(
+                table["frame_index"].combine_chunks().to_numpy(), dtype=np.int64
+            )[row_indices]
+            frame_to_row = {int(frame): int(row) for frame, row in zip(frame_values, row_indices)}
+            selected_rows = [frame_to_row[frame] for frame in anchor_frames if frame in frame_to_row]
+            if not selected_rows:
+                raise RuntimeError(
+                    f"anchor manifest has no matching frames for episode {episode['episode_index']}"
+                )
+            selected = table.take(np.asarray(selected_rows, dtype=np.int64))
+            sample_count = len(selected_rows)
+        else:
+            sample_count = min(samples_per_episode, row_indices.size)
+            within_episode = np.linspace(0, row_indices.size - 1, sample_count, dtype=np.int64)
+            selected = table.take(row_indices[within_episode])
         sample_timestamps = np.asarray(
             selected["timestamp"].combine_chunks().to_numpy(), dtype=np.float64
         )
@@ -181,6 +227,11 @@ def main() -> None:
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True)
+    parser.add_argument(
+        "--anchor-manifest",
+        type=Path,
+        help="Optional task-balanced episode/frame anchor manifest.",
+    )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--samples-per-episode", type=int, default=256)
@@ -192,17 +243,39 @@ def main() -> None:
         type=int,
         help="Reserve one complete episode for validation.",
     )
+    parser.add_argument(
+        "--validation-episodes",
+        type=int,
+        nargs="+",
+        help="Reserve multiple complete episodes for validation.",
+    )
+    parser.add_argument(
+        "--test-episodes",
+        type=int,
+        nargs="+",
+        default=[],
+        help="Reserve complete episodes for final test metrics.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(0)
     np.random.seed(0)
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    anchor_manifest = (
+        json.loads(args.anchor_manifest.read_text(encoding="utf-8"))
+        if args.anchor_manifest
+        else None
+    )
     if args.cache.exists():
         cached = np.load(args.cache)
         sample_data = {key: cached[key] for key in cached.files}
     if not args.cache.exists() or "observations" not in sample_data:
         sample_data = build_cache(
-            args.dataset_root, manifest, args.samples_per_episode, args.image_size
+            args.dataset_root,
+            manifest,
+            args.samples_per_episode,
+            args.image_size,
+            anchor_manifest=anchor_manifest,
         )
         args.cache.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(args.cache, **sample_data)
@@ -213,18 +286,26 @@ def main() -> None:
     task_one_hot = np.eye(TASK_COUNT, dtype=np.float32)[sample_data["tasks"]]
     episode_ids = sample_data["episode_ids"]
     all_episodes = sorted(set(episode_ids.tolist()))
-    if args.validation_episode is not None:
-        if args.validation_episode not in all_episodes:
-            raise ValueError(
-                f"validation episode {args.validation_episode} is not in {all_episodes}"
-            )
-        train_indices = np.flatnonzero(episode_ids != args.validation_episode)
-        validation_indices = np.flatnonzero(episode_ids == args.validation_episode)
-        split_strategy = "leave-one-episode-out"
-        training_episodes = [
-            episode for episode in all_episodes if episode != args.validation_episode
-        ]
-        validation_episodes = [args.validation_episode]
+    if args.validation_episode is not None and args.validation_episodes:
+        raise ValueError("use either --validation-episode or --validation-episodes")
+    requested_validation = (
+        [args.validation_episode]
+        if args.validation_episode is not None
+        else list(args.validation_episodes or [])
+    )
+    requested_test = list(args.test_episodes)
+    if requested_validation:
+        holdout = set(requested_validation + requested_test)
+        missing = sorted(holdout - set(all_episodes))
+        if missing:
+            raise ValueError(f"holdout episodes are not in the cache: {missing}")
+        train_indices = np.flatnonzero(~np.isin(episode_ids, list(holdout)))
+        validation_indices = np.flatnonzero(np.isin(episode_ids, requested_validation))
+        test_indices = np.flatnonzero(np.isin(episode_ids, requested_test))
+        split_strategy = "episode-holdout"
+        training_episodes = [episode for episode in all_episodes if episode not in holdout]
+        validation_episodes = sorted(requested_validation)
+        test_episodes = sorted(requested_test)
     else:
         train_parts = []
         validation_parts = []
@@ -239,6 +320,8 @@ def main() -> None:
         split_strategy = "within-episode-random-10-percent"
         training_episodes = all_episodes
         validation_episodes = all_episodes
+        test_episodes = []
+        test_indices = np.empty(0, dtype=np.int64)
     target_mean = target[train_indices].mean(axis=0)
     target_std = np.maximum(target[train_indices].std(axis=0), 1e-6)
     observation_mean = observation[train_indices].mean(axis=0)
@@ -254,6 +337,7 @@ def main() -> None:
     normalized_tensor = torch.from_numpy(normalized_target)
     train_ids = torch.from_numpy(train_indices)
     validation_ids = torch.from_numpy(validation_indices)
+    test_ids = torch.from_numpy(test_indices)
     model = VisualBC(images.shape[1], observation.shape[1], target.shape[1]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
@@ -286,6 +370,7 @@ def main() -> None:
     with torch.no_grad():
         train_normalized = predict(train_ids)
         validation_normalized = predict(validation_ids)
+        test_normalized = predict(test_ids) if test_ids.numel() else None
         train_loss = float(
             nn.functional.mse_loss(train_normalized, normalized_tensor[train_ids].to(device)).item()
         )
@@ -294,8 +379,20 @@ def main() -> None:
                 validation_normalized, normalized_tensor[validation_ids].to(device)
             ).item()
         )
+        test_loss = (
+            float(
+                nn.functional.mse_loss(
+                    test_normalized, normalized_tensor[test_ids].to(device)
+                ).item()
+            )
+            if test_normalized is not None
+            else None
+        )
         train_prediction = train_normalized * std_tensor + mean_tensor
         validation_prediction = validation_normalized * std_tensor + mean_tensor
+        test_prediction = (
+            test_normalized * std_tensor + mean_tensor if test_normalized is not None else None
+        )
 
     args.checkpoint.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -310,6 +407,7 @@ def main() -> None:
             "episodes": all_episodes,
             "training_episodes": training_episodes,
             "validation_episodes": validation_episodes,
+            "test_episodes": test_episodes,
             "image_size": args.image_size,
             "camera_count": int(images.shape[1]),
         },
@@ -322,10 +420,13 @@ def main() -> None:
         "split_strategy": split_strategy,
         "training_episodes": training_episodes,
         "validation_episodes": validation_episodes,
+        "test_episodes": test_episodes,
         "samples": int(images.shape[0]),
         "samples_per_episode": args.samples_per_episode,
+        "anchor_manifest": str(args.anchor_manifest) if args.anchor_manifest else None,
         "training_samples": int(train_indices.size),
         "validation_samples": int(validation_indices.size),
+        "test_samples": int(test_indices.size),
         "camera_count": int(images.shape[1]),
         "image_size": args.image_size,
         "target_dimension": int(target.shape[1]),
@@ -337,10 +438,16 @@ def main() -> None:
         "initial_normalized_mse": initial_loss,
         "final_train_normalized_mse": train_loss,
         "validation_normalized_mse": validation_loss,
+        "test_normalized_mse": test_loss,
         "loss_reduction_ratio": train_loss / initial_loss,
         "train_metrics": metrics(train_prediction, target_tensor[train_ids].to(device)),
         "validation_metrics": metrics(
             validation_prediction, target_tensor[validation_ids].to(device)
+        ),
+        "test_metrics": (
+            metrics(test_prediction, target_tensor[test_ids].to(device))
+            if test_prediction is not None
+            else None
         ),
         "checkpoint": str(args.checkpoint),
         "scope": "Five-episode visual-proprioceptive training pipeline; not yet connected to the 23D Isaac Sim action interface.",

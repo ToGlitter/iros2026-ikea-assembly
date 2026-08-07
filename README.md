@@ -21,6 +21,10 @@
 | 官方 state replay | 已接入并验证抓取，关键状态误差为 0 |
 | 动作重放偏差定位 | frame 76 关节先偏离，早于 frame 186 物体运动 |
 | 官方视觉 BC baseline | 五条演示训练完成，episode 159 独立验证完成 |
+| 技能平衡视觉 BC 对照 | 已完成；夹爪误差改善，但末端/关节误差退化 |
+| 第一阶段官方 32 条视觉 BC | 24/4/4 train/validation/test 已完成 |
+| 第一阶段 Lightwheel 16 条 23D state head | 12/2/2 train/validation/test 已完成 |
+| 第一阶段 Lightwheel 16 条视觉 23D head | 三路 RGB + proprioception 已完成 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
@@ -111,6 +115,83 @@ OFFICIAL_VISUAL_STEPS=5000 OFFICIAL_VISUAL_VALIDATION_EPISODE=159 \
 OFFICIAL_TEMPORAL_STEPS=5000 ./scripts/run_official_temporal_baseline.sh
 ```
 
+完成官方五条技能区间和本地 Lightwheel manifest 审计：
+
+```bash
+./scripts/run_next_data_audit.sh
+```
+
+结果保存在本地 `logs/official_five_task_segments.json` 和 `logs/lightwheel_local_manifest.json`，不会提交数据本身。
+
+全量远程清单与官方 episode 元数据审计（只读目录元数据，并只下载约 9.8 MB 的 episode metadata）：
+
+```bash
+python3 scripts/build_remote_hf_manifest.py \
+  --repo-id LightwheelAI/iros2026-ikea-assembly --path data \
+  --output logs/lightwheel_remote_manifest.json
+python3 scripts/build_remote_hf_manifest.py \
+  --repo-id BitRobot/G1_WBT_Dex1_Building-Children-Table \
+  --path meta/episodes --recursive \
+  --output logs/official_remote_episode_manifest.json
+python3 scripts/download_hf_manifest_files.py \
+  --manifest logs/official_remote_episode_manifest.json \
+  --dataset-root datasets/official_lerobot --prefix meta/episodes/
+PYTHONPATH=/tmp/ikea-pydeps python3 scripts/analyze_official_episode_metadata.py \
+  datasets/official_lerobot --output logs/official_all_episode_metadata.json
+```
+
+远程清单只统计文件数量、逻辑大小和 LFS OID，不会把 262.5 GB 的 Lightwheel HDF5 或官方视频拉到本机。全量 episode 元数据审计也只说明每条 episode 的长度和任务词汇，逐帧技能区间仍需后续下载 data Parquet 后计算。
+
+官方 52 个 data Parquet 下载完成后，可运行全量逐帧技能审计：
+
+```bash
+./scripts/run_full_official_data_audit.sh
+```
+
+该步骤只读取状态/动作和 `task_index` 列，不解码视频；当前全量结果为 6,276,443 帧、13,930 个连续区间。
+
+生成八技能等量的 anchor manifest（不复制数据）：
+
+```bash
+PYTHONPATH=/tmp/ikea-pydeps python3 scripts/build_balanced_segment_sampler.py \
+  logs/official_all_task_segments.json \
+  --samples-per-task 1000 \
+  --output logs/official_balanced_segments_1000.json
+```
+
+输出会按 episode/frame 恢复时间顺序，供视觉或时序 loader 做技能平衡采样；它不会把官方 50D 动作转换成 Isaac Sim 的 23D 动作。
+
+检查平衡采样是否改变动作分布：
+
+```bash
+PYTHONPATH=/tmp/ikea-pydeps python3 scripts/analyze_balanced_action_distribution.py \
+  datasets/official_lerobot \
+  --anchor-manifest logs/official_155_159_balanced_segments_160.json \
+  --episode-manifest logs/official_five_episode_manifest.json \
+  --output logs/official_155_159_balanced_action_distribution.json
+```
+
+将五条本地演示的平衡 anchor 接入视觉 baseline：
+
+```bash
+./scripts/run_official_balanced_visual_baseline.sh
+```
+
+默认使用每技能 160 个 anchor（共 1,280 个），并将 episode 159 整条作为留出验证。该 runner 需要官方 Docker 镜像和四路 RGB 已下载。
+
+当前对照结果：平衡采样的 episode 159 验证 RMSE 为 `ee_action 0.1358`、`hand_cmd 0.2577`、`robot_q_desired 0.0436 rad`；均匀采样 baseline 分别为 `0.0817`、`0.2806`、`0.0366 rad`。因此平衡采样只在夹爪命令上改善，暂不替换默认模型。
+
+第一阶段 32 条官方 + 16 条 Lightwheel 实验：
+
+```bash
+./scripts/run_official_first_stage_32_visual.sh
+./scripts/run_lightwheel_first_stage_state_head.sh
+```
+
+官方视觉模型使用 24/4/4 episode split，测试 RMSE 为 `ee_action 0.0617`、`hand_cmd 0.1866`、`robot_q_desired 0.0493 rad`。Lightwheel state-only 23D 动作头使用 12/2/2 文件 split，测试 RMSE 为 grippers `0.1701`、wrists `0.0265`、navigation `0.0332`。两者都是监督动作预测结果，尚未代表 Isaac Sim 闭环成功。
+
+Lightwheel 三路 RGB + proprioception 23D head 的测试 RMSE 为 grippers `0.1697`、wrists `0.0300`、navigation `0.0361`；相比 state-only 头没有改善，因此当前仍把 state-only 头作为协议 smoke baseline，视觉头作为后续时序模型的起点。
+
 当前缓存从 episodes 155–159 每条均匀抽取 256 帧，每帧输入四路 `64 × 64` RGB、50 维 proprioception 和任务标签，预测 50 维官方原始动作。严格实验只用 episodes 155–158 训练，并把 episode 159 整条留作验证；它验证的是跨演示预测能力，尚未连接 Isaac Sim 的 23 维控制接口。
 
 时序 baseline 对每个锚点解码 `[-6, -4, -2, 0]` 四个历史时刻，并预测当前开始的连续 8 帧动作。视频帧通过 Parquet 时间戳加 episode 在共享 MP4 中的 `from_timestamp` 定位，PyAV 从前一关键帧顺序解码；当前五条数据的最大时间戳匹配误差约 14 微秒。残差版相对当前机器人状态预测动作，且让末端、夹爪、关节三组损失等权。
@@ -146,6 +227,16 @@ state replay 默认播放前 600 帧。播放完整 7349 帧：
 ```bash
 IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/AssembleTableTask_1784627181912351.hdf5
 ```
+
+完整三视角 state replay 并录制为本地视频：
+
+```bash
+./scripts/record_ikea_state_replay_three_view.sh \
+  datasets/AssembleTableTask_1784627181912351.hdf5 \
+  ikea_state_replay_three_view.mp4
+```
+
+当前本地视频包含 7,349 帧、10 FPS、672×264 合成三视角画面。视频被 `.gitignore` 排除，不会上传 GitHub。
 
 两种模式都使用 <http://127.0.0.1:8765/viewer/>。状态栏会明确显示 `replay` 或 `state replay`，并显示当前帧、百分比和 FPS。
 
@@ -217,6 +308,8 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── download_official_manifest.py
 │   ├── train_official_visual_baseline.py
 │   ├── train_official_temporal_baseline.py
+│   ├── compare_official_lightwheel_single_demo.py
+│   ├── capture_three_view_replay.py
 │   ├── analyze_expert_states.py
 │   ├── diagnose_replay.py
 │   ├── ikea_live.py
@@ -229,6 +322,25 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── run_official_episode_planner.sh
 │   ├── run_official_visual_baseline.sh
 │   ├── run_official_temporal_baseline.sh
+│   ├── run_official_lightwheel_single_compare.sh
+│   ├── record_ikea_state_replay_three_view.sh
+│   ├── analyze_official_task_segments.py
+│   ├── build_lightwheel_manifest.py
+│   ├── build_remote_hf_manifest.py
+│   ├── download_hf_manifest_files.py
+│   ├── analyze_official_episode_metadata.py
+│   ├── run_full_official_data_audit.sh
+│   ├── build_balanced_segment_sampler.py
+│   ├── run_official_balanced_visual_baseline.sh
+│   ├── analyze_balanced_action_distribution.py
+│   ├── select_experiment_data.py
+│   ├── train_lightwheel_state_action_head.py
+│   ├── run_official_first_stage_32_visual.sh
+│   ├── run_lightwheel_first_stage_state_head.sh
+│   ├── train_lightwheel_visual_action_head.py
+│   ├── run_lightwheel_first_stage_visual_head.sh
+│   ├── run_first_stage_experiment.sh
+│   ├── run_next_data_audit.sh
 │   ├── run_ikea_smoke.sh
 │   ├── start_ikea_live.sh
 │   ├── start_ikea_replay.sh

@@ -5,7 +5,9 @@ image="${ROBOFINALS_IMAGE:-paperc/robofinals:RoboFinals-IKEA-V1}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dataset="${1:-$repo_root/datasets/AssembleTableTask_1784627181912351.hdf5}"
 demo="${IKEA_STATE_REPLAY_DEMO:-demo_0}"
-max_frames="${IKEA_STATE_REPLAY_MAX_FRAMES:-600}"
+# An explicitly empty value means replay the complete demo. Only an unset
+# variable keeps the short 600-frame default.
+max_frames="${IKEA_STATE_REPLAY_MAX_FRAMES-600}"
 dataset="$(realpath "$dataset")"
 
 if [[ ! -f "$dataset" ]]; then
