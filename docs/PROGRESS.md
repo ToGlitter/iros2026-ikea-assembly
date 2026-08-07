@@ -399,3 +399,21 @@ Lightwheel action replay          可完整执行，但最终 success=false
 - 新增 `scripts/train_lightwheel_visual_action_head.py` 和 `scripts/run_lightwheel_first_stage_visual_head.sh`。三路 RGB + 79D proprioception 的 23D 视觉头使用 3,072/512/512 个 train/validation/test 样本；测试归一化 MSE `0.07979`，测试 RMSE 为 grippers `0.1697`、wrists `0.0300`、navigation `0.0361`。
 - 与 state-only 头相比，三路 RGB 视觉头没有改善 held-out 动作误差（夹爪几乎相同，wrist/navigation 略差），说明 16 条数据和单帧输入还不足以证明视觉闭环优势；state-only 头仍保留为控制协议 smoke baseline。
 - 这三组结果仍是监督动作预测 baseline，不是闭环成功率；官方模型尚未接 Isaac Sim，仿真模型也尚未用预测 action 做 rollout。下一步是对 held-out HDF5 做无接触 action rollout，先定位 23D action 到 WBC 的跟踪误差，再进入接触抓取。
+
+### 第一轮 Lightwheel state-head 闭环 rollout
+
+- 新增 `scripts/ikea_model_rollout.py` 与 `scripts/run_lightwheel_model_rollout.sh`，将已训练的 79D state-only checkpoint 接入 Isaac Sim 的 23D action 接口。
+- 在 held-out `AssembleTableTask_1784697887866010.hdf5/demo_1` 上运行完整前 300 帧；HDF5 初始状态写入后的机器人和刚体状态误差均为 0，证明 reset/RPC/坐标顺序一致。
+- 原始 action 裸接基线：第 3 帧首次超过 `0.2 rad` 关节误差阈值，最大关节误差 `2.34 rad`、最大根位置误差 `0.376 m`；300 帧结束时未成功、未截断，物体基本未运动。
+- 离线逐帧动作对照（同一 8,832 帧 held-out demo）：raw gripper RMSE `0.1443`、wrist RMSE `0.0163`，但 gripper 在第 3 帧越界（最大约 `1.63`），wrist 最大绝对误差约 `0.343`。
+- 加入最小安全投影（夹爪裁剪到 `[-1,1]`、双腕四元数归一化）后重新跑 300 帧：最大关节误差降至 `2.10 rad`，但第 3 帧仍是同一右腕偏差，说明主因是单帧动作头的分布外误差与 WBC 灵敏度/闭环累积，而不是 RPC 或物体接触。
+- 诊断产物：`logs/model_rollout_report.json`、`logs/model_rollout_trace.npz`、`logs/lightwheel_model_rollout_projected/model_rollout_report.json`、`logs/lightwheel_state_head_demo1_action_eval.json`。均为本地产物，不上传数据或 checkpoint。
+
+本轮结论：state-head 已完成“预测 action 能否驱动 Isaac Sim”的接口验收，但尚未达到可接触控制标准。下一步应优先训练短时序/action-chunk 头或加入 action-rate/安全约束，再做单技能（靠近→抓取）接触 rollout；不能把本轮 300 帧结果称为比赛任务成功。
+
+### 四帧 temporal state-head 对照
+
+- 新增 `scripts/train_lightwheel_temporal_state_action_head.py` 与 `scripts/run_lightwheel_temporal_state_head.sh`；输入最近 4 帧机器人状态（316D），输出当前 23D action。
+- 训练/验证/测试样本仍为 `6,144/1,024/1,024`，CUDA 5,000 步。测试 RMSE：grippers `0.1898`、wrists `0.0295`、navigation `0.0290`，整体没有优于 state-only 头。
+- 新增对 temporal checkpoint 的历史状态拼接支持，并在同一 held-out demo 前 300 帧闭环：首次显著关节偏差推迟到 frame 5，最大关节误差 `1.98 rad`，但最大根位置漂移增至 `0.631 m`；仍未 success/truncated，物体未进入有效装配阶段。
+- 结论：短历史能缓解最初的尖峰，但单纯 temporal concatenation 仍不足以稳定 WBC 闭环；下一步应加入动作变化率限制/action chunk，并按“靠近→抓取→插入”技能片段做闭环训练与验收。

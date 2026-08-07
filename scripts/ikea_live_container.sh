@@ -150,7 +150,14 @@ while time.time() < deadline:
 raise SystemExit("timeout waiting for env_server on 127.0.0.1:50000")
 PY_WAIT
 
-conda run --no-capture-output -n robofinals \
-  python /host/scripts/ikea_live.py \
-  --output-dir /host/logs/live \
-  "$@"
+if [[ "${1:-}" == "--model-rollout" ]]; then
+  shift
+  conda run --no-capture-output -n robofinals \
+    python /host/scripts/ikea_model_rollout.py \
+    "$@"
+else
+  conda run --no-capture-output -n robofinals \
+    python /host/scripts/ikea_live.py \
+    --output-dir /host/logs/live \
+    "$@"
+fi

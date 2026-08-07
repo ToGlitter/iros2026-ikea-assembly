@@ -45,6 +45,11 @@
 - `lightwheel_first_stage_local_manifest.json`：16 个 Lightwheel HDF5 的 schema、demo、帧数和成功标记汇总。
 - `lightwheel_first_stage_state_head.json`、对应 `.pt`：Lightwheel 79D state 到 23D action head 结果。
 - `lightwheel_first_stage_visual_head.json`、对应 `.pt`：Lightwheel 三路 RGB + 79D proprioception 到 23D action head 结果。
+- `lightwheel_state_head_demo1_action_eval.json`：held-out Lightwheel demo 全帧 raw/projected 23D 动作误差。
+- `model_rollout_report.json`、`model_rollout_trace.npz`：state-head 裸接 Isaac Sim 的 300 帧闭环诊断。
+- `lightwheel_model_rollout_projected/`：夹爪限幅和腕部四元数归一化后的 300 帧闭环诊断及实时三路画面。
+- `lightwheel_first_stage_temporal_state_head.json`、对应 `.pt`：四帧 temporal state-action head 训练结果。
+- `lightwheel_temporal_model_rollout/`：四帧 temporal head 的 300 帧闭环诊断及实时三路画面。
 - `*.log`：Isaac Sim / env server 日志。
 
 这些文件可能很大，或含内部数据路径和元数据，因此不会同步到 GitHub。

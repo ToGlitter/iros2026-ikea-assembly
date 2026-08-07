@@ -16,6 +16,8 @@ logs/official159_lightwheel_comparison_frames/
 logs/official_five_task_segments.json
 logs/lightwheel_local_manifest.json
 logs/live/
+logs/lightwheel_model_rollout*/
+logs/lightwheel_temporal_model_rollout/
 *.pid
 
 # Robotics datasets and model artifacts
