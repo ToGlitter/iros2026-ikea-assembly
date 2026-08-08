@@ -29,17 +29,24 @@ from ikea_live import (
     to_numpy,
     trajectory_errors,
 )
+from ikea_smoke import NEUTRAL_HOLD_ACTION
 
 
 class ActionHead(torch.nn.Module):
-    def __init__(self, state_dimension: int, hidden1: int = 256, hidden2: int = 256) -> None:
+    def __init__(
+        self,
+        state_dimension: int,
+        hidden1: int = 256,
+        hidden2: int = 256,
+        output_dimension: int = 23,
+    ) -> None:
         super().__init__()
         self.model = torch.nn.Sequential(
             torch.nn.Linear(state_dimension, hidden1),
             torch.nn.GELU(),
             torch.nn.Linear(hidden1, hidden2),
             torch.nn.GELU(),
-            torch.nn.Linear(hidden2, 23),
+            torch.nn.Linear(hidden2, output_dimension),
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -88,6 +95,43 @@ def project_action(values: np.ndarray) -> np.ndarray:
     return result
 
 
+def ensemble_action(
+    chunks: list[tuple[int, np.ndarray]], frame_index: int, decay: float
+) -> tuple[np.ndarray, int]:
+    candidates: list[np.ndarray] = []
+    weights: list[float] = []
+    for start, chunk in chunks:
+        offset = frame_index - start
+        if 0 <= offset < len(chunk):
+            candidates.append(chunk[offset].copy())
+            weights.append(float(np.exp(-decay * offset)))
+    if not candidates:
+        raise RuntimeError("no action chunk covers the current frame")
+    reference = candidates[-1]
+    for candidate in candidates:
+        for start in (5, 12):
+            if float(np.dot(candidate[start : start + 4], reference[start : start + 4])) < 0:
+                candidate[start : start + 4] *= -1
+    return np.average(np.stack(candidates), axis=0, weights=weights).astype(np.float32), len(candidates)
+
+
+def limit_action_rate(
+    values: np.ndarray,
+    previous: np.ndarray,
+    delta_limit: np.ndarray,
+    scale: float,
+) -> np.ndarray:
+    result = values.copy()
+    for start in (5, 12):
+        if float(np.dot(result[start : start + 4], previous[start : start + 4])) < 0:
+            result[start : start + 4] *= -1
+    limit = np.asarray(delta_limit, dtype=np.float32) * scale
+    result[2:23] = previous[2:23] + np.clip(
+        result[2:23] - previous[2:23], -limit[2:23], limit[2:23]
+    )
+    return project_action(result)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -100,6 +144,9 @@ def main() -> None:
     parser.add_argument("--max-frames", type=int, default=300)
     parser.add_argument("--action-scale", type=float, default=1.0)
     parser.add_argument("--action-projection", choices=("safe", "none"), default="safe")
+    parser.add_argument("--temporal-ensemble-decay", type=float, default=0.25)
+    parser.add_argument("--rate-limit", choices=("checkpoint", "none"), default="checkpoint")
+    parser.add_argument("--rate-limit-scale", type=float, default=1.0)
     args = parser.parse_args()
     if args.max_frames < 1:
         parser.error("--max-frames must be positive")
@@ -113,14 +160,20 @@ def main() -> None:
     state_std = np.asarray(checkpoint["state_std"], dtype=np.float32)
     action_mean = np.asarray(checkpoint["action_mean"], dtype=np.float32)
     action_std = np.asarray(checkpoint["action_std"], dtype=np.float32)
+    chunk_length = int(checkpoint.get("chunk_length", 1))
+    action_delta_limit = checkpoint.get("action_delta_limit")
+    if action_delta_limit is not None:
+        action_delta_limit = np.asarray(action_delta_limit, dtype=np.float32)
     history_length = int(checkpoint.get("history", 1))
     state_width = int(state_mean.shape[0] // history_length)
     first_weight = checkpoint["model_state_dict"]["model.0.weight"]
     second_weight = checkpoint["model_state_dict"]["model.2.weight"]
+    output_weight = checkpoint["model_state_dict"]["model.4.weight"]
     model = ActionHead(
         int(state_mean.shape[0]),
         hidden1=int(first_weight.shape[0]),
         hidden2=int(second_weight.shape[0]),
+        output_dimension=int(output_weight.shape[0]),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -139,6 +192,8 @@ def main() -> None:
     terminated_value = False
     truncated_value = False
     observation: Any = None
+    pending_chunks: list[tuple[int, np.ndarray]] = []
+    previous_action = project_action(np.asarray(NEUTRAL_HOLD_ACTION, dtype=np.float32))
 
     try:
         atomic_json(
@@ -205,16 +260,28 @@ def main() -> None:
             ).to(device)
             with torch.no_grad():
                 normalized_action = model(state_tensor.unsqueeze(0))[0]
-                predicted = (
-                    normalized_action * torch.from_numpy(action_std).to(device)
-                    + torch.from_numpy(action_mean).to(device)
-                ).detach().cpu().numpy()
+                predicted_chunk = (
+                    normalized_action * torch.from_numpy(action_std.reshape(-1)).to(device)
+                    + torch.from_numpy(action_mean.reshape(-1)).to(device)
+                ).detach().cpu().numpy().reshape(chunk_length, 23)
+            pending_chunks = [
+                item for item in pending_chunks if frame_index - item[0] < chunk_length
+            ]
+            pending_chunks.append((frame_index, predicted_chunk))
+            predicted, ensemble_sources = ensemble_action(
+                pending_chunks, frame_index, args.temporal_ensemble_decay
+            )
             raw_predicted = (predicted * args.action_scale).astype(np.float32)
             predicted = (
                 project_action(raw_predicted)
                 if args.action_projection == "safe"
                 else raw_predicted
             )
+            if args.rate_limit == "checkpoint" and action_delta_limit is not None:
+                predicted = limit_action_rate(
+                    predicted, previous_action, action_delta_limit, args.rate_limit_scale
+                )
+            previous_action = predicted.copy()
             action_history.append(predicted.copy())
             observation, _, terminated, truncated, extras = env.step(
                 torch.from_numpy(predicted[None]).to(device)
@@ -259,6 +326,7 @@ def main() -> None:
                     "first_divergence": first_divergence,
                     "predicted_action": predicted.astype(float).tolist(),
                     "raw_predicted_action": raw_predicted.astype(float).tolist(),
+                    "ensemble_sources": ensemble_sources,
                     "predicted_action_groups": action_groups(predicted),
                     "expert_action": actions[frame_index].astype(float).tolist(),
                     "expert_action_groups": action_groups(actions[frame_index]),
@@ -270,7 +338,7 @@ def main() -> None:
                 break
 
         np.savez_compressed(
-            args.output_dir.parent / "model_rollout_trace.npz",
+            args.output_dir / "model_rollout_trace.npz",
             predicted_actions=np.asarray(action_history, dtype=np.float32),
             pre_joint_max_abs=np.asarray(
                 [item["robot_joint_max_abs_rad"] for item in pre_errors], dtype=np.float32
@@ -293,6 +361,10 @@ def main() -> None:
             "action_scale": args.action_scale,
             "action_projection": args.action_projection,
             "history": history_length,
+            "chunk_length": chunk_length,
+            "temporal_ensemble_decay": args.temporal_ensemble_decay,
+            "rate_limit": args.rate_limit if action_delta_limit is not None else "unavailable",
+            "rate_limit_scale": args.rate_limit_scale,
             "source_success": metadata["source_success"],
             "initial_state_error": initial_error,
             "first_divergence": first_divergence,
@@ -308,7 +380,7 @@ def main() -> None:
             "elapsed_seconds": time.perf_counter() - started,
             "scope": "Short closed-loop predicted-action smoke rollout; no contact success claim.",
         }
-        atomic_json(report, args.output_dir.parent / "model_rollout_report.json")
+        atomic_json(report, args.output_dir / "model_rollout_report.json")
         atomic_json(
             {**report, "updated_unix": time.time()}, args.output_dir / "status.json"
         )

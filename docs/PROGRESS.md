@@ -417,3 +417,12 @@ Lightwheel action replay          可完整执行，但最终 success=false
 - 训练/验证/测试样本仍为 `6,144/1,024/1,024`，CUDA 5,000 步。测试 RMSE：grippers `0.1898`、wrists `0.0295`、navigation `0.0290`，整体没有优于 state-only 头。
 - 新增对 temporal checkpoint 的历史状态拼接支持，并在同一 held-out demo 前 300 帧闭环：首次显著关节偏差推迟到 frame 5，最大关节误差 `1.98 rad`，但最大根位置漂移增至 `0.631 m`；仍未 success/truncated，物体未进入有效装配阶段。
 - 结论：短历史能缓解最初的尖峰，但单纯 temporal concatenation 仍不足以稳定 WBC 闭环；下一步应加入动作变化率限制/action chunk，并按“靠近→抓取→插入”技能片段做闭环训练与验收。
+
+### 八步 action-chunk 与变化率约束实验
+
+- 新增 `scripts/train_lightwheel_action_chunk_head.py` 和 `scripts/run_lightwheel_action_chunk_head.sh`。输入4帧机器人状态（316D），一次预测未来8步、每步23D的动作块；训练划分、样本量和5000步设置与前两组 Lightwheel policy 保持一致。
+- 测试集首步 RMSE：grippers `0.2121`、wrists `0.0335`、navigation `0.0327`；八步全 horizon RMSE 分别为 `0.4012/0.0381/0.0540`。离线精度没有优于单步 state-only 头，因此本实验只检验重叠动作块时间集成能否改善闭环连续性。
+- rollout 每帧生成一个8步动作块，对覆盖当前时刻的最多8个预测按指数权重集成；双腕四元数先统一符号再平均和归一化。训练集相邻专家动作绝对变化的P99.5保存进checkpoint，用于可选变化率约束，测试轨迹不参与阈值计算。
+- 同一 held-out demo 前300帧，时间集成+变化率约束：首次显著偏差 frame 6，最大关节误差 `1.81 rad`，最大根位置漂移 `0.342 m`；相较单帧安全投影的 frame 3、`2.10 rad`、`0.336 m`，早期和关节峰值改善，但整机漂移没有本质解决。
+- 关闭变化率约束、保留时间集成的消融：首次偏差仍为 frame 6，最大关节误差 `1.70 rad`，最大根位置漂移增至 `0.448 m`。这说明时间集成主要推迟早期尖峰；P99.5变化率约束能压低根部漂移，但当前逐维限制还不够平衡。
+- 两组实验均未 success/truncated，也没有完成有效抓取。下一步不应继续扩大同一全轨迹MLP，而应先抽取所有成功demo的“初始站立→靠近第一根桌腿”片段，训练阶段专用policy，并把根位姿/导航稳定性作为损失和闭环验收指标。

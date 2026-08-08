@@ -50,6 +50,9 @@
 - `lightwheel_model_rollout_projected/`：夹爪限幅和腕部四元数归一化后的 300 帧闭环诊断及实时三路画面。
 - `lightwheel_first_stage_temporal_state_head.json`、对应 `.pt`：四帧 temporal state-action head 训练结果。
 - `lightwheel_temporal_model_rollout/`：四帧 temporal head 的 300 帧闭环诊断及实时三路画面。
+- `lightwheel_first_stage_action_chunk_head.json`、对应 `.pt`：四帧状态历史到八步23D动作块的训练结果。
+- `lightwheel_action_chunk_rollout/`：时间集成和训练集P99.5动作变化率约束的300帧闭环诊断。
+- `lightwheel_action_chunk_no_rate_rollout/`：保留时间集成、关闭变化率约束的消融诊断。
 - `*.log`：Isaac Sim / env server 日志。
 
 这些文件可能很大，或含内部数据路径和元数据，因此不会同步到 GitHub。

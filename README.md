@@ -27,6 +27,7 @@
 | 第一阶段 Lightwheel 16 条视觉 23D head | 三路 RGB + proprioception 已完成 |
 | Lightwheel state-head 300 帧闭环 rollout | 已接入 Isaac Sim；发现单帧动作头/WBC 闭环发散，尚未接触成功 |
 | Lightwheel 四帧 temporal state-head | 已训练并闭环验证；启动偏差略晚但长期仍漂移 |
+| Lightwheel 8步 action-chunk head | 已训练并完成时间集成/变化率消融；偏差推迟到frame 6，仍未稳定 |
 
 详细记录见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
@@ -345,6 +346,8 @@ IKEA_STATE_REPLAY_MAX_FRAMES= ./scripts/start_ikea_state_replay.sh datasets/Asse
 │   ├── run_lightwheel_model_rollout.sh
 │   ├── train_lightwheel_temporal_state_action_head.py
 │   ├── run_lightwheel_temporal_state_head.sh
+│   ├── train_lightwheel_action_chunk_head.py
+│   ├── run_lightwheel_action_chunk_head.sh
 │   ├── run_lightwheel_first_stage_visual_head.sh
 │   ├── run_first_stage_experiment.sh
 │   ├── run_next_data_audit.sh
